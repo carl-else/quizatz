@@ -29,13 +29,13 @@ jobs:
       - run: >-
           npx partykit deploy
           --var ENTRA_TENANT_ID="$ENTRA_TENANT_ID"
-          ENTRA_API_AUDIENCE="$ENTRA_API_AUDIENCE"
+          ENTRA_API_CLIENT_ID="$ENTRA_API_CLIENT_ID"
           ENTRA_API_SCOPE="$ENTRA_API_SCOPE"
           ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
         env:
           PARTYKIT_LOGIN: ${{ secrets.PARTYKIT_LOGIN }}
           PARTYKIT_TOKEN: ${{ secrets.PARTYKIT_TOKEN }}
           ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
-          ENTRA_API_AUDIENCE: ${{ vars.ENTRA_API_AUDIENCE }}
+          ENTRA_API_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
           ENTRA_API_SCOPE: ${{ vars.ENTRA_API_SCOPE_NAME }}
           ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}

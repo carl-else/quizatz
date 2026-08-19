@@ -26,12 +26,13 @@ function authConfig() {
 function getClient(): Promise<PublicClientApplication> {
   if (!clientPromise) {
     const { clientId, tenantId } = authConfig();
+    const redirectUri = new URL("auth-callback.html", `${window.location.origin}${import.meta.env.BASE_URL}`);
     clientPromise = (async () => {
       const client = new PublicClientApplication({
         auth: {
           clientId,
           authority: `https://login.microsoftonline.com/${tenantId}`,
-          redirectUri: `${window.location.origin}${import.meta.env.BASE_URL}`,
+          redirectUri: redirectUri.toString(),
         },
         cache: { cacheLocation: "sessionStorage" },
       });
@@ -44,7 +45,7 @@ function getClient(): Promise<PublicClientApplication> {
 
 async function acquireToken(client: PublicClientApplication, account: AccountInfo, scope: string) {
   try {
-    return await client.acquireTokenSilent({ account, scopes: [scope] });
+    return await client.acquireTokenSilent({ account, scopes: [scope], forceRefresh: true });
   } catch (error) {
     if (!(error instanceof InteractionRequiredAuthError)) throw error;
     return client.acquireTokenPopup({ account, scopes: [scope] });

@@ -6,5 +6,10 @@ export default defineConfig(({ mode }) => {
   return {
     base: env.VITE_BASE_PATH ?? "/",
     plugins: [vue()],
+    build: {
+      rollupOptions: {
+        input: ["index.html", "auth-callback.html"],
+      },
+    },
   };
 });

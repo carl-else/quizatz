@@ -73,7 +73,7 @@ async function authenticateToken(
   }
 
   const tenantId = envString(env, "ENTRA_TENANT_ID");
-  const audience = envString(env, "ENTRA_API_AUDIENCE");
+  const audience = envString(env, "ENTRA_API_CLIENT_ID") ?? envString(env, "VITE_ENTRA_CLIENT_ID");
   const requiredScope = envString(env, "ENTRA_API_SCOPE");
   if (!tenantId || !audience || !requiredScope) {
     throw new Error("Organizer authentication is not configured");
