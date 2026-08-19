@@ -12,6 +12,7 @@ $Repository = "carl-else/quizatz"
 $PagesOrigin = "https://carl-else.github.io"
 $DeploymentIdentityName = "quizatz-github-deployment"
 $StorageAccountName = "stquizatzb75faa02"
+$ContainerAppName = "ca-quizatz-prod"
 
 function Assert-CommandSucceeded([string]$Description) {
     if ($LASTEXITCODE -ne 0) {
@@ -67,6 +68,18 @@ foreach ($provider in "Microsoft.App", "Microsoft.Storage") {
     Assert-CommandSucceeded "Registering $provider"
 }
 
+$foundationImage = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+$existingImage = az resource show `
+    --resource-group $ResourceGroup `
+    --resource-type "Microsoft.App/containerApps" `
+    --name $ContainerAppName `
+    --api-version "2024-03-01" `
+    --query "properties.template.containers[0].image" `
+    --output tsv 2>$null
+if ($LASTEXITCODE -eq 0 -and $existingImage) {
+    $foundationImage = $existingImage
+}
+
 Write-Host "Deploying Container Apps and Table Storage infrastructure."
 az deployment group create `
     --resource-group $ResourceGroup `
@@ -74,6 +87,7 @@ az deployment group create `
     --template-file infra/main.bicep `
     --parameters `
         storageAccountName=$StorageAccountName `
+        image=$foundationImage `
         entraTenantId=$tenantId `
         entraApiClientId=$clientId `
         entraApiScope=$scopeName `
@@ -113,27 +127,39 @@ foreach ($role in "Contributor", "Role Based Access Control Administrator") {
 }
 
 $credentialName = "github-pages-environment"
+$repositoryMetadata = gh api "repos/$Repository" | ConvertFrom-Json
+Assert-CommandSucceeded "Reading GitHub repository metadata"
+$federatedSubject = "repo:$($repositoryMetadata.owner.login)@$($repositoryMetadata.owner.id)/$($repositoryMetadata.name)@$($repositoryMetadata.id):environment:github-pages"
 $existingCredential = az ad app federated-credential list `
     --id $applicationId `
-    --query "[?name=='$credentialName'].id | [0]" `
-    --output tsv
-if (-not $existingCredential) {
-    $credential = @{
-        name = $credentialName
-        issuer = "https://token.actions.githubusercontent.com"
-        subject = "repo:${Repository}:environment:github-pages"
-        description = "Deploy Quizatz from the protected GitHub Pages environment"
-        audiences = @("api://AzureADTokenExchange")
-    } | ConvertTo-Json -Compress
-    $credentialFile = New-TemporaryFile
-    try {
-        Set-Content -Path $credentialFile -Value $credential -Encoding utf8NoBOM
+    --query "[?name=='$credentialName'] | [0]" `
+    --output json | ConvertFrom-Json
+Assert-CommandSucceeded "Reading GitHub federated credential"
+$credential = @{
+    name = $credentialName
+    issuer = "https://token.actions.githubusercontent.com"
+    subject = $federatedSubject
+    description = "Deploy Quizatz from the protected GitHub Pages environment"
+    audiences = @("api://AzureADTokenExchange")
+} | ConvertTo-Json -Compress
+$credentialFile = New-TemporaryFile
+try {
+    Set-Content -Path $credentialFile -Value $credential -Encoding utf8NoBOM
+    if (-not $existingCredential) {
         az ad app federated-credential create --id $applicationId --parameters $credentialFile --output none
         Assert-CommandSucceeded "Creating GitHub federated credential"
     }
-    finally {
-        Remove-Item $credentialFile -Force
+    elseif ($existingCredential.subject -ne $federatedSubject) {
+        az ad app federated-credential update `
+            --id $applicationId `
+            --federated-credential-id $existingCredential.id `
+            --parameters $credentialFile `
+            --output none
+        Assert-CommandSucceeded "Updating GitHub federated credential"
     }
+}
+finally {
+    Remove-Item $credentialFile -Force
 }
 
 Write-Host "Configuring non-secret GitHub Actions variables."
