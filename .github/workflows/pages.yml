@@ -1,0 +1,58 @@
+name: Build and deploy Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      VITE_BASE_PATH: /${{ github.event.repository.name }}/
+      VITE_ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+      VITE_ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+      VITE_ENTRA_API_SCOPE: ${{ vars.ENTRA_API_SCOPE }}
+      VITE_PARTYKIT_HOST: ${{ vars.PARTYKIT_HOST }}
+      VITE_PARTYKIT_PROTOCOL: wss
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/configure-pages@v5
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
