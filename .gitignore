@@ -5,4 +5,5 @@ test-results/
 .env
 .env.*
 !.env.example
-.partykit/
+.azurite/
+dist-server/

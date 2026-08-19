@@ -10,7 +10,7 @@ The initial version of Quizatz will be angled toward internal company use, with 
 
 I plan to build Quizatz using a modern web application stack. The frontend will be developed using TypeScript and Vue.js for its reactive components and ease of integration with real-time features. It will be a server-less application in that I intend to serve it using GitHub Pages. It will be committed to GitHub and deployed using GitHub Actions for continuous integration and deployment.
 
-The data backend will be powered by [PartyKit](https://docs.partykit.io). It is room-oriented and allows for real-time collaboration, making it a perfect fit for the live interaction features of Quizatz. PartyKit will handle the state management and synchronization between users in real-time. One caveat is that PartyKit deletes rooms after 24 hours of inactivity, which means that quizzes and polls will not be persistent. This is acceptable for the initial version of Quizatz, as it focuses on live interactions rather than long-term data storage.
+The authoritative data backend will be a Node WebSocket service hosted on Azure Container Apps Consumption, with live-session state persisted in Azure Table Storage. The MVP will scale between zero and one backend replica to stay within the project's zero-cost target or its `$10-15` monthly Azure-credit allowance. Quizatz itself owns the fixed 24-hour session lease and cleanup behavior; infrastructure inactivity does not define product expiry.
 
 ## Features
 

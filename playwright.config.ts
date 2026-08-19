@@ -13,9 +13,21 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      command: "npx partykit dev --port 2999 --no-hotkeys --var E2E_AUTH_TOKEN=playwright-only ALLOWED_ORIGINS=http://127.0.0.1:4174",
-      port: 2999,
+      command: "npm run storage -- --tableHost 127.0.0.1",
+      port: 10002,
       reuseExistingServer: false,
+    },
+    {
+      command: "npx tsx server/index.ts",
+      port: 3000,
+      reuseExistingServer: false,
+      env: {
+        PORT: "3000",
+        TABLE_STORAGE_CONNECTION_STRING: "UseDevelopmentStorage=true",
+        CREATE_TABLE_IF_MISSING: "true",
+        E2E_AUTH_TOKEN: "playwright-only",
+        ALLOWED_ORIGINS: "http://127.0.0.1:4174",
+      },
     },
     {
       command: "npm run dev:web -- --host 127.0.0.1 --port 4174",
@@ -23,8 +35,7 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         VITE_BASE_PATH: "/",
-        VITE_PARTYKIT_HOST: "localhost:2999",
-        VITE_PARTYKIT_PROTOCOL: "ws",
+        VITE_BACKEND_URL: "http://127.0.0.1:3000",
       },
     },
   ],

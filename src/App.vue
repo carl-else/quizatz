@@ -9,9 +9,8 @@ import {
   Radio,
   Users,
 } from "@lucide/vue";
-import type PartySocket from "partysocket";
 import { signInOrganizer } from "./auth";
-import { connectToLobby, createLiveSession } from "./lobby";
+import { connectToLobby, createLiveSession, type LobbyConnection } from "./lobby";
 import { isSessionCode, normalizeSessionCode, type LobbySnapshot } from "./protocol";
 
 type View = "home" | "organizer" | "participant";
@@ -25,7 +24,7 @@ const busy = ref(false);
 const error = ref("");
 const copied = ref(false);
 const homeUrl = import.meta.env.BASE_URL;
-let socket: PartySocket | undefined;
+let socket: LobbyConnection | undefined;
 
 const participantCount = computed(() => snapshot.value?.participantCount ?? 0);
 const shareUrl = computed(() => {

@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
   pages: write
   id-token: write
 
@@ -36,21 +37,53 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     env:
-      VITE_BASE_PATH: /${{ github.event.repository.name }}/
-      VITE_ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
-      VITE_ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
-      VITE_ENTRA_API_SCOPE: ${{ vars.ENTRA_API_SCOPE }}
-      VITE_PARTYKIT_HOST: ${{ vars.PARTYKIT_HOST }}
-      VITE_PARTYKIT_PROTOCOL: wss
+      AZURE_SUBSCRIPTION_ID: b75faa02-db01-487a-bf96-156a8fc08879
+      AZURE_RESOURCE_GROUP: rg-quizatz-prod
+      CONTAINER_IMAGE: ghcr.io/${{ github.repository_owner }}/quizatz-backend:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: b75faa02-db01-487a-bf96-156a8fc08879
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - run: docker build --tag "$CONTAINER_IMAGE" .
+      - run: docker push "$CONTAINER_IMAGE"
+      - id: infrastructure
+        run: |
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+          backendUrl=$(az deployment group create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              storageAccountName="${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}" \
+              image="$CONTAINER_IMAGE" \
+              entraTenantId="${{ vars.ENTRA_TENANT_ID }}" \
+              entraApiClientId="${{ vars.ENTRA_CLIENT_ID }}" \
+              entraApiScope="${{ vars.ENTRA_API_SCOPE_NAME }}" \
+              allowedOrigins="https://${{ github.repository_owner }}.github.io" \
+            --query properties.outputs.backendUrl.value \
+            --output tsv)
+          curl --fail --retry 8 --retry-all-errors --retry-delay 5 "$backendUrl/health"
+          echo "backend-url=$backendUrl" >> "$GITHUB_OUTPUT"
       - uses: actions/configure-pages@v5
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          VITE_ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          VITE_ENTRA_API_SCOPE: ${{ vars.ENTRA_API_SCOPE }}
+          VITE_BACKEND_URL: ${{ steps.infrastructure.outputs.backend-url }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

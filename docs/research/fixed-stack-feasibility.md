@@ -1,8 +1,17 @@
+<!-- markdownlint-disable MD034 -->
+
 # Fixed GitHub Pages, PartyKit, and Microsoft Sign-In Feasibility
 
 Date: 2026-08-19
 
-## Decision
+> **Status: Superseded on 2026-08-19.** This report established that the original
+> stack was technically feasible, but managed PartyKit deployment later became
+> unavailable. The PartyKit platform conclusion is replaced by
+> [ADR 0001](../adr/0001-host-live-session-backend-on-azure-container-apps.md).
+> The GitHub Pages and Microsoft Entra security findings remain applicable to
+> the Azure Container Apps backend.
+
+## Historical Decision (Superseded)
 
 **Feasible, with required specification constraints.** A TypeScript/Vue static
 client on GitHub Pages can obtain Microsoft Entra work/school identities in the
@@ -129,12 +138,13 @@ hibernation. [PartyKit: Persisting state](https://docs.partykit.io/guides/persis
    when MSAL cannot renew silently, show an organizer sign-in action and retain
    the organizer role for the matching principal only. [PartySocket API](https://docs.partykit.io/reference/partysocket-api/) [Microsoft: MSAL.js SSO](https://learn.microsoft.com/en-us/entra/identity-platform/msal-js-sso)
 
-## Product Decision
+## Historical Product Decision (Superseded)
 
-**No platform decision needs reopening.** Keep GitHub Pages and PartyKit.
-Reopen only the prior retention assumption: replace the undocumented
-"PartyKit deletes rooms after 24 hours of inactivity" statement with an explicit
-Quizatz live-session expiry and cleanup requirement.
+At the time of this investigation, no platform decision needed reopening. The
+later deployment failure and cost comparison superseded that conclusion. Do not
+use this section as current platform guidance; use ADR 0001. The report's
+retention finding remains valid: Quizatz requires explicit live-session expiry
+and cleanup rather than relying on infrastructure inactivity.
 
 ## Primary Sources
 
@@ -150,3 +160,5 @@ Quizatz live-session expiry and cleanup requirement.
 - Microsoft Entra access tokens: https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens
 - Microsoft Entra API scopes: https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-configure-app-expose-web-apis
 - Microsoft Entra MSAL.js SSO: https://learn.microsoft.com/en-us/entra/identity-platform/msal-js-sso
+
+<!-- markdownlint-enable MD034 -->
