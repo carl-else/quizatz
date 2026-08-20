@@ -3,6 +3,45 @@ export const SESSION_LEASE_MS = 24 * 60 * 60 * 1000;
 
 export type SessionAccessPolicy = "anonymous" | "named";
 
+export interface SingleChoiceOption {
+  id: string;
+  text: string;
+}
+
+export interface SingleChoiceQuestion {
+  id: string;
+  text: string;
+  options: SingleChoiceOption[];
+}
+
+export interface StartQuestionCommand {
+  type: "start-question";
+  question: {
+    text: string;
+    options: string[];
+  };
+}
+
+export interface AnswerQuestionCommand {
+  type: "answer-question";
+  optionId: string;
+}
+
+export interface CloseQuestionCommand {
+  type: "close-question";
+}
+
+export interface RevealQuestionCommand {
+  type: "reveal-question";
+}
+
+export type QuestionState = "upcoming" | "active" | "closed" | "revealed";
+
+export interface SingleChoiceResult {
+  options: Array<SingleChoiceOption & { responseCount: number; percentage: number }>;
+  totalResponseCount: number;
+}
+
 export interface LobbySnapshot {
   type: "lobby";
   sessionCode: string;
@@ -10,8 +49,33 @@ export interface LobbySnapshot {
   expiresAt: string;
 }
 
+export interface ActiveQuestionSnapshot {
+  type: "active-question";
+  question: SingleChoiceQuestion;
+}
+
+export interface ClosedQuestionSnapshot {
+  type: "closed-question";
+  question: SingleChoiceQuestion;
+}
+
+export interface RevealedQuestionSnapshot {
+  type: "revealed-question";
+  question: SingleChoiceQuestion;
+  result: SingleChoiceResult;
+}
+
+export interface AnswerAcceptedMessage {
+  type: "answer-accepted";
+  optionId: string;
+}
+
 export type LobbyMessage =
   | LobbySnapshot
+  | ActiveQuestionSnapshot
+  | ClosedQuestionSnapshot
+  | RevealedQuestionSnapshot
+  | AnswerAcceptedMessage
   | { type: "expired" }
   | { type: "join-required" };
 

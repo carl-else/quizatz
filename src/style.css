@@ -289,6 +289,55 @@ h1, h2 {
 }
 .count-stage span { font-size: 18px; font-weight: 700; }
 
+.question-authoring, .active-question {
+  margin-top: 54px;
+  padding-top: 30px;
+  border-top: 1px solid var(--ink);
+}
+.question-authoring h2, .active-question h2 { font-size: 38px; }
+.question-form { display: grid; gap: 18px; max-width: 680px; margin-top: 28px; }
+.question-form label, .answer-options legend {
+  color: #4e574f;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.question-form input {
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  color: var(--ink);
+  background: transparent;
+  outline: 0;
+}
+.answer-options {
+  margin: 28px 0 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 12px;
+  text-align: left;
+}
+.answer-options label { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+.result-chart {
+  margin: 28px 0 0;
+  display: grid;
+  gap: 18px;
+  text-align: left;
+}
+.result-bar { display: grid; gap: 7px; }
+.result-bar-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.result-bar-track { height: 16px; background: rgba(29, 33, 29, 0.14); }
+.result-bar-fill { display: block; height: 100%; background: var(--coral); }
+
 .participant-lobby {
   min-height: calc(100vh - 72px);
   display: grid;

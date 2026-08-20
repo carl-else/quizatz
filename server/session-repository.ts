@@ -1,6 +1,6 @@
 import { TableClient, type TableEntityResult } from "@azure/data-tables";
 import { DefaultAzureCredential } from "@azure/identity";
-import type { SessionAccessPolicy } from "../src/protocol.js";
+import type { QuestionState, SessionAccessPolicy, SingleChoiceQuestion } from "../src/protocol.js";
 
 const PARTITION_KEY = "live-session";
 const DEFAULT_TABLE_NAME = "LiveSessions";
@@ -16,6 +16,9 @@ export interface SessionRecord {
   organizer: OrganizerPrincipal;
   accessPolicy: SessionAccessPolicy;
   passwordVerification?: string;
+  activeQuestion?: SingleChoiceQuestion;
+  questionState?: QuestionState;
+  responses?: Record<string, string>;
   createdAt: number;
   expiresAt: number;
   etag?: string;
@@ -27,6 +30,9 @@ interface SessionEntity {
   organizerName: string;
   accessPolicy: SessionAccessPolicy;
   passwordVerification?: string;
+  activeQuestion?: string;
+  questionState?: QuestionState;
+  responses?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -34,6 +40,7 @@ interface SessionEntity {
 export interface SessionRepository {
   create(session: SessionRecord): Promise<boolean>;
   get(code: string): Promise<SessionRecord | undefined>;
+  update(session: SessionRecord): Promise<boolean>;
   delete(session: SessionRecord): Promise<boolean>;
 }
 
@@ -47,6 +54,9 @@ function toRecord(entity: TableEntityResult<SessionEntity>, code: string): Sessi
     },
     accessPolicy: entity.accessPolicy,
     passwordVerification: entity.passwordVerification,
+    activeQuestion: entity.activeQuestion ? JSON.parse(entity.activeQuestion) as SingleChoiceQuestion : undefined,
+    questionState: entity.questionState,
+    responses: entity.responses ? JSON.parse(entity.responses) as Record<string, string> : undefined,
     createdAt: entity.createdAt,
     expiresAt: entity.expiresAt,
     etag: entity.etag,
@@ -100,6 +110,9 @@ export class TableSessionRepository implements SessionRepository {
         organizerName: session.organizer.name,
         accessPolicy: session.accessPolicy,
         passwordVerification: session.passwordVerification,
+        activeQuestion: session.activeQuestion ? JSON.stringify(session.activeQuestion) : undefined,
+        questionState: session.questionState,
+        responses: session.responses ? JSON.stringify(session.responses) : undefined,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
       });
@@ -115,6 +128,32 @@ export class TableSessionRepository implements SessionRepository {
       return toRecord(await this.client.getEntity<SessionEntity>(PARTITION_KEY, code), code);
     } catch (error) {
       if (statusCode(error) === 404) return undefined;
+      throw error;
+    }
+  }
+
+  async update(session: SessionRecord): Promise<boolean> {
+    try {
+      await this.client.updateEntity<SessionEntity>({
+        partitionKey: PARTITION_KEY,
+        rowKey: session.code,
+        organizerOid: session.organizer.oid,
+        organizerTid: session.organizer.tid,
+        organizerName: session.organizer.name,
+        accessPolicy: session.accessPolicy,
+        passwordVerification: session.passwordVerification,
+        activeQuestion: session.activeQuestion ? JSON.stringify(session.activeQuestion) : undefined,
+        questionState: session.questionState,
+        responses: session.responses ? JSON.stringify(session.responses) : undefined,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+      }, "Replace", { etag: session.etag });
+      const updated = await this.get(session.code);
+      if (!updated) return false;
+      Object.assign(session, updated);
+      return true;
+    } catch (error) {
+      if (statusCode(error) === 404 || statusCode(error) === 412) return false;
       throw error;
     }
   }

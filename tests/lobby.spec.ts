@@ -25,20 +25,20 @@ test("an organizer creates a live session and an anonymous participant joins", a
   await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
   await expect(organizer.getByTestId("participant-count")).toHaveText("1");
 
-  const unauthorizedResetStatus = await participant.evaluate(async () => {
-    const response = await fetch("http://127.0.0.1:3000/api/e2e/reset-connections", {
+  const unauthorizedResetStatus = await participant.evaluate(async (sessionCode) => {
+    const response = await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
       method: "POST",
     });
     return response.status;
-  });
+  }, code);
   expect(unauthorizedResetStatus).toBe(401);
 
-  await participant.evaluate(async () => {
-    await fetch("http://127.0.0.1:3000/api/e2e/reset-connections", {
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
       method: "POST",
       headers: { Authorization: "Bearer playwright-only" },
     });
-  });
+  }, code);
   await expect.poll(async () => participant.evaluate(async (sessionCode) => {
     const response = await fetch(
       `http://127.0.0.1:3000/api/e2e/connection-count?session=${sessionCode}`,
@@ -149,6 +149,148 @@ test("a password-protected invite link prompts for its password", async ({ brows
   await participant.getByLabel(/Password \(if required\)/).fill("correct horse battery staple");
   await participant.getByTitle("Join session").click();
   await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("an organizer starts a single-choice question for a participant", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+
+  await expect(organizer.getByRole("heading", { name: "Which tool will we use?" })).toBeVisible();
+  await expect(participant.getByRole("heading", { name: "Which tool will we use?" })).toBeVisible();
+  await expect(participant.getByRole("radio", { name: "Quizatz" })).toBeVisible();
+  await expect(participant.getByRole("radio", { name: "A whiteboard" })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("an organizer can start a single-choice question with eight options", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Choose a number");
+  for (let index = 1; index <= 8; index += 1) {
+    if (index > 2) await organizer.getByRole("button", { name: "Add option" }).click();
+    await organizer.getByLabel(`Option ${index}`).fill(String(index));
+  }
+  await expect(organizer.getByRole("button", { name: "Add option" })).toBeDisabled();
+  await organizer.getByRole("button", { name: "Start question" }).click();
+
+  await expect(participant.getByRole("radio", { name: "8" })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("participants revise answers before the organizer closes and reveals a single-choice result", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const firstParticipantContext = await browser.newContext();
+  const firstParticipant = await firstParticipantContext.newPage();
+  await firstParticipant.goto(`/?session=${code}`);
+  const secondParticipantContext = await browser.newContext();
+  const secondParticipant = await secondParticipantContext.newPage();
+  await secondParticipant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+
+  await firstParticipant.getByRole("radio", { name: "Quizatz" }).focus();
+  await firstParticipant.keyboard.press("Space");
+  await expect(firstParticipant.getByText("Answer saved: Quizatz.")).toBeVisible();
+  await firstParticipant.keyboard.press("ArrowDown");
+  await expect(firstParticipant.getByText("Answer saved: A whiteboard.")).toBeVisible();
+  await secondParticipant.getByRole("radio", { name: "Quizatz" }).check();
+  await expect(secondParticipant.getByText("Answer saved: Quizatz.")).toBeVisible();
+
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await expect(firstParticipant.getByText("Responses are closed.")).toBeVisible();
+  await expect(firstParticipant.getByRole("radio", { name: "Quizatz" })).toHaveCount(0);
+
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await expect(firstParticipant.getByRole("progressbar", { name: "Quizatz: 1 response (50%)" })).toBeVisible();
+  await expect(firstParticipant.getByRole("progressbar", { name: "A whiteboard: 1 response (50%)" })).toBeVisible();
+  await expect(firstParticipant.getByText("2 responses total")).toBeVisible();
+
+  await secondParticipantContext.close();
+  await firstParticipantContext.close();
+  await organizerContext.close();
+});
+
+test("a reconnecting participant revises their active answer without adding another response", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+  await participant.getByRole("radio", { name: "Quizatz" }).check();
+
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  await expect.poll(async () => participant.evaluate(async (sessionCode) => {
+    const response = await fetch(
+      `http://127.0.0.1:3000/api/e2e/connection-count?session=${sessionCode}`,
+      { headers: { Authorization: "Bearer playwright-only" } },
+    );
+    return ((await response.json()) as { connectionCount: number }).connectionCount;
+  }, code)).toBe(2);
+
+  await participant.getByRole("radio", { name: "A whiteboard" }).check();
+  await expect(participant.getByText("Answer saved: A whiteboard.")).toBeVisible();
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await expect(participant.getByRole("progressbar", { name: "Quizatz: 0 responses (0%)" })).toBeVisible();
+  await expect(participant.getByRole("progressbar", { name: "A whiteboard: 1 response (100%)" })).toBeVisible();
+  await expect(participant.getByText("1 response total")).toBeVisible();
 
   await participantContext.close();
   await organizerContext.close();

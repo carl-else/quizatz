@@ -6,6 +6,7 @@ import {
   type LobbyMessage,
   type LobbySnapshot,
   type SessionCreated,
+  type StartQuestionCommand,
 } from "./protocol";
 
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -13,6 +14,10 @@ const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000];
 
 export interface LobbyConnection {
   close(code?: number, reason?: string): void;
+  startQuestion(question: StartQuestionCommand["question"]): void;
+  answerQuestion(optionId: string): void;
+  closeQuestion(): void;
+  revealQuestion(): void;
 }
 
 function backendUrl(): URL {
@@ -52,24 +57,36 @@ export async function createLiveSession(
   throw new Error("Could not reserve a unique session code. Try again.");
 }
 
-function socketUrl(code: string, accessToken: string | undefined): URL {
+function socketUrl(code: string, accessToken: string | undefined, participantId: string | undefined): URL {
   const url = new URL(`api/sessions/${code}/ws`, backendUrl());
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   if (accessToken) url.searchParams.set("token", accessToken);
+  if (participantId) url.searchParams.set("participant", participantId);
   return url;
+}
+
+function anonymousParticipantId(code: string): string {
+  const key = `quizatz:anonymous-participant:${code}`;
+  const existing = sessionStorage.getItem(key);
+  if (existing) return existing;
+  const participantId = crypto.randomUUID();
+  sessionStorage.setItem(key, participantId);
+  return participantId;
 }
 
 export function connectToLobby(
   rawCode: string,
   accessToken: string | undefined,
   password: string | undefined,
-  onSnapshot: (snapshot: LobbySnapshot) => void,
+  onSnapshot: (snapshot: LobbyMessage) => void,
   onFailure: (message: string) => void,
   onPasswordRequired: () => void,
   onNamedParticipationRequired: () => void,
+  onAnswerAccepted: (optionId: string) => void,
 ): LobbyConnection {
   const code = normalizeSessionCode(rawCode);
   if (!isSessionCode(code)) throw new Error("Enter a six-character session code.");
+  const participantId = accessToken ? undefined : anonymousParticipantId(code);
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
   let reconnectAttempt = 0;
@@ -77,7 +94,7 @@ export function connectToLobby(
   let receivedSnapshot = false;
 
   const connect = () => {
-    socket = new WebSocket(socketUrl(code, accessToken));
+    socket = new WebSocket(socketUrl(code, accessToken, participantId));
     socket.addEventListener("open", () => {
       reconnectAttempt = 0;
     });
@@ -96,6 +113,10 @@ export function connectToLobby(
           return;
         }
         socket?.send(JSON.stringify({ type: "join", password }));
+        return;
+      }
+      if (message.type === "answer-accepted") {
+        onAnswerAccepted(message.optionId);
         return;
       }
       receivedSnapshot = true;
@@ -134,6 +155,18 @@ export function connectToLobby(
 
   connect();
   return {
+    startQuestion(question) {
+      socket?.send(JSON.stringify({ type: "start-question", question } satisfies StartQuestionCommand));
+    },
+    answerQuestion(optionId) {
+      socket?.send(JSON.stringify({ type: "answer-question", optionId }));
+    },
+    closeQuestion() {
+      socket?.send(JSON.stringify({ type: "close-question" }));
+    },
+    revealQuestion() {
+      socket?.send(JSON.stringify({ type: "reveal-question" }));
+    },
     close(closeCode = 1000, reason) {
       stopped = true;
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);

@@ -15,7 +15,10 @@ import {
   isSessionCode,
   normalizeSessionCode,
   type LobbySnapshot,
+  type QuestionState,
   type SessionAccessPolicy,
+  type SingleChoiceResult,
+  type SingleChoiceQuestion,
 } from "./protocol";
 
 type View = "home" | "organizer" | "participant";
@@ -25,11 +28,18 @@ const sessionCode = ref("");
 const organizerName = ref("");
 const organizerToken = ref("");
 const snapshot = ref<LobbySnapshot>();
+const activeQuestion = ref<SingleChoiceQuestion>();
+const questionState = ref<QuestionState>();
+const questionResult = ref<SingleChoiceResult>();
+const selectedOptionId = ref("");
+const answerStatus = ref("");
 const busy = ref(false);
 const error = ref("");
 const copied = ref(false);
 const accessPolicy = ref<SessionAccessPolicy>("anonymous");
 const password = ref("");
+const questionText = ref("");
+const questionOptions = ref(["", ""]);
 const homeUrl = import.meta.env.BASE_URL;
 let socket: LobbyConnection | undefined;
 
@@ -53,7 +63,31 @@ function useSocket(accessToken?: string) {
     accessToken,
     password.value || undefined,
     (nextSnapshot) => {
-      snapshot.value = nextSnapshot;
+      if (nextSnapshot.type === "lobby") {
+        snapshot.value = nextSnapshot;
+        activeQuestion.value = undefined;
+        questionState.value = undefined;
+        questionResult.value = undefined;
+      } else if (nextSnapshot.type === "active-question") {
+        if (activeQuestion.value?.id !== nextSnapshot.question.id) {
+          selectedOptionId.value = "";
+          answerStatus.value = "";
+        }
+        snapshot.value = undefined;
+        activeQuestion.value = nextSnapshot.question;
+        questionState.value = "active";
+        questionResult.value = undefined;
+      } else if (nextSnapshot.type === "closed-question") {
+        snapshot.value = undefined;
+        activeQuestion.value = nextSnapshot.question;
+        questionState.value = "closed";
+        questionResult.value = undefined;
+      } else if (nextSnapshot.type === "revealed-question") {
+        snapshot.value = undefined;
+        activeQuestion.value = nextSnapshot.question;
+        questionState.value = "revealed";
+        questionResult.value = nextSnapshot.result;
+      }
       error.value = "";
     },
     (message) => {
@@ -67,7 +101,37 @@ function useSocket(accessToken?: string) {
       view.value = "home";
       error.value = "Sign in to join this live session.";
     },
+    (optionId) => {
+      const option = activeQuestion.value?.options.find((candidate) => candidate.id === optionId);
+      answerStatus.value = option ? `Answer saved: ${option.text}.` : "Answer saved.";
+    },
   );
+}
+
+function startQuestion() {
+  const options = questionOptions.value.map((option) => option.trim());
+  if (!questionText.value.trim() || options.length < 2 || options.length > 8 || options.some((option) => !option)) {
+    error.value = "Enter a question and between two and eight options.";
+    return;
+  }
+  error.value = "";
+  socket?.startQuestion({ text: questionText.value, options });
+}
+
+function addQuestionOption() {
+  if (questionOptions.value.length < 8) questionOptions.value.push("");
+}
+
+function answerQuestion(optionId: string) {
+  socket?.answerQuestion(optionId);
+}
+
+function closeQuestion() {
+  socket?.closeQuestion();
+}
+
+function revealQuestion() {
+  socket?.revealQuestion();
 }
 
 async function createSession() {
@@ -123,6 +187,11 @@ function leaveLobby() {
   socket?.close(1000, "Left lobby");
   socket = undefined;
   snapshot.value = undefined;
+  activeQuestion.value = undefined;
+  questionState.value = undefined;
+  questionResult.value = undefined;
+  selectedOptionId.value = "";
+  answerStatus.value = "";
   organizerToken.value = "";
   error.value = "";
   view.value = "home";
@@ -266,6 +335,32 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         <strong data-testid="participant-count">{{ participantCount }}</strong>
         <span>{{ participantCount === 1 ? "participant" : "participants" }} in the lobby</span>
       </section>
+      <section v-if="snapshot" class="question-authoring" aria-labelledby="question-title">
+        <p class="eyebrow">First question</p>
+        <h2 id="question-title">Ask a single-choice question</h2>
+        <form class="question-form" @submit.prevent="startQuestion">
+          <label for="question-text">Question</label>
+          <input id="question-text" v-model="questionText" />
+          <label v-for="(_, index) in questionOptions" :key="index" :for="`question-option-${index}`">
+            Option {{ index + 1 }}
+            <input :id="`question-option-${index}`" v-model="questionOptions[index]" />
+          </label>
+          <button class="secondary-button" type="button" :disabled="questionOptions.length === 8" @click="addQuestionOption">
+            Add option
+          </button>
+          <button class="primary-button ink-button" type="submit">Start question</button>
+        </form>
+      </section>
+      <section v-else-if="activeQuestion" class="active-question" aria-live="polite">
+        <p class="eyebrow">Active question</p>
+        <h2>{{ activeQuestion.text }}</h2>
+        <button v-if="questionState === 'active'" class="primary-button ink-button" type="button" @click="closeQuestion">
+          Close question
+        </button>
+        <button v-else-if="questionState === 'closed'" class="primary-button ink-button" type="button" @click="revealQuestion">
+          Reveal result
+        </button>
+      </section>
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>
     </main>
 
@@ -273,7 +368,44 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
       <section class="participant-status">
         <div class="pulse" aria-hidden="true"><span></span></div>
         <p class="eyebrow">Session {{ sessionCode }}</p>
-        <h1 v-if="snapshot">You’re in.</h1>
+        <template v-if="activeQuestion && questionState === 'active'">
+          <h1>{{ activeQuestion.text }}</h1>
+          <fieldset class="answer-options">
+            <legend>Choose one answer</legend>
+            <label v-for="option in activeQuestion.options" :key="option.id">
+              <input v-model="selectedOptionId" type="radio" name="answer" :value="option.id" @change="answerQuestion(option.id)" />
+              {{ option.text }}
+            </label>
+          </fieldset>
+          <p v-if="answerStatus" role="status">{{ answerStatus }}</p>
+        </template>
+        <template v-else-if="activeQuestion && questionState === 'closed'">
+          <h1>{{ activeQuestion.text }}</h1>
+          <p>Responses are closed.</p>
+        </template>
+        <template v-else-if="activeQuestion && questionState === 'revealed' && questionResult">
+          <h1>{{ activeQuestion.text }}</h1>
+          <div class="result-chart" aria-label="Single-choice result">
+            <div v-for="option in questionResult.options" :key="option.id" class="result-bar">
+              <div class="result-bar-label">
+                <span>{{ option.text }}</span>
+                <span>{{ option.responseCount }} {{ option.responseCount === 1 ? "response" : "responses" }} ({{ option.percentage }}%)</span>
+              </div>
+              <div
+                class="result-bar-track"
+                role="progressbar"
+                :aria-label="`${option.text}: ${option.responseCount} ${option.responseCount === 1 ? 'response' : 'responses'} (${option.percentage}%)`"
+                :aria-valuenow="option.percentage"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <span class="result-bar-fill" :style="{ width: `${option.percentage}%` }"></span>
+              </div>
+            </div>
+          </div>
+          <p>{{ questionResult.totalResponseCount }} {{ questionResult.totalResponseCount === 1 ? "response" : "responses" }} total</p>
+        </template>
+        <h1 v-else-if="snapshot">You’re in.</h1>
         <h1 v-else>Joining...</h1>
         <p v-if="snapshot">Waiting for the organizer to begin.</p>
         <p v-if="error" class="error-message" role="alert">{{ error }}</p>

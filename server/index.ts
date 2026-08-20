@@ -3,19 +3,29 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { createPasswordVerification, verifiesPassword } from "./access-policy.js";
 import { authenticateToken, samePrincipal } from "./auth.js";
-import { TableSessionRepository, type SessionRecord } from "./session-repository.js";
+import {
+  TableSessionRepository,
+  type OrganizerPrincipal,
+  type SessionRecord,
+} from "./session-repository.js";
 import {
   isSessionCode,
   normalizeSessionCode,
   SESSION_LEASE_MS,
   type CreateSessionOptions,
+  type LobbyMessage,
   type LobbySnapshot,
+  type QuestionState,
   type SessionCreated,
+  type SingleChoiceResult,
+  type SingleChoiceQuestion,
+  type StartQuestionCommand,
 } from "../src/protocol.js";
 
 interface ConnectedClient {
   socket: WebSocket;
   role: "organizer" | "participant";
+  participantId: string;
 }
 
 const port = Number(process.env.PORT ?? 3000);
@@ -29,7 +39,9 @@ await repository.initialize();
 await repository.get("HEALTH");
 
 const clientsBySession = new Map<string, Set<ConnectedClient>>();
+const cachedSessions = new Map<string, SessionRecord>();
 const expirationTimers = new Map<string, NodeJS.Timeout>();
+const mutationQueues = new Map<string, Promise<void>>();
 const webSockets = new WebSocketServer({ noServer: true });
 
 function configuredOrigins(): string[] {
@@ -55,6 +67,11 @@ function sendJson(response: ServerResponse, status: number, body: unknown, reque
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(body));
+}
+
+function sendEmpty(response: ServerResponse, status: number, request: IncomingMessage): void {
+  response.writeHead(status, corsHeaders(request));
+  response.end();
 }
 
 function bearerToken(request: IncomingMessage): string | undefined {
@@ -95,9 +112,14 @@ function createSessionOptions(body: unknown): CreateSessionOptions | undefined {
 }
 
 async function activeSession(code: string): Promise<SessionRecord | undefined> {
-  const session = await repository.get(code);
-  if (!session || session.expiresAt > Date.now()) return session;
+  const session = cachedSessions.get(code) ?? await repository.get(code);
+  if (!session) return undefined;
+  if (session.expiresAt > Date.now()) {
+    cachedSessions.set(code, session);
+    return session;
+  }
   await repository.delete(session);
+  cachedSessions.delete(code);
   expireConnections(code);
   return undefined;
 }
@@ -113,10 +135,140 @@ function lobbySnapshot(session: SessionRecord): LobbySnapshot {
   };
 }
 
+function singleChoiceResult(session: SessionRecord): SingleChoiceResult {
+  const question = session.activeQuestion;
+  if (!question) return { options: [], totalResponseCount: 0 };
+  const responseCounts = new Map<string, number>();
+  for (const optionId of Object.values(session.responses ?? {})) {
+    responseCounts.set(optionId, (responseCounts.get(optionId) ?? 0) + 1);
+  }
+  const totalResponseCount = [...responseCounts.values()].reduce((total, count) => total + count, 0);
+  return {
+    options: question.options.map((option) => {
+      const responseCount = responseCounts.get(option.id) ?? 0;
+      return {
+        ...option,
+        responseCount,
+        percentage: totalResponseCount ? Math.round((responseCount / totalResponseCount) * 100) : 0,
+      };
+    }),
+    totalResponseCount,
+  };
+}
+
+function sessionMessage(session: SessionRecord): LobbyMessage {
+  if (!session.activeQuestion || !session.questionState) return lobbySnapshot(session);
+  switch (session.questionState) {
+    case "upcoming":
+      return lobbySnapshot(session);
+    case "active":
+      return { type: "active-question", question: session.activeQuestion };
+    case "closed":
+      return { type: "closed-question", question: session.activeQuestion };
+    case "revealed":
+      return {
+        type: "revealed-question",
+        question: session.activeQuestion,
+        result: singleChoiceResult(session),
+      };
+  }
+}
+
 function broadcast(session: SessionRecord): void {
-  const message = JSON.stringify(lobbySnapshot(session));
+  const message = JSON.stringify(sessionMessage(session));
   for (const client of clientsBySession.get(session.code) ?? []) {
     if (client.socket.readyState === WebSocket.OPEN) client.socket.send(message);
+  }
+}
+
+function parseStartQuestion(message: unknown): StartQuestionCommand["question"] | undefined {
+  if (typeof message !== "object" || message === null) return undefined;
+  const { type, question } = message as Record<string, unknown>;
+  if (type !== "start-question" || typeof question !== "object" || question === null) return undefined;
+  const { text, options } = question as Record<string, unknown>;
+  if (typeof text !== "string" || !Array.isArray(options)
+    || options.length < 2 || options.length > 8 || options.some((option) => typeof option !== "string")) {
+    return undefined;
+  }
+  const normalizedText = text.trim();
+  const normalizedOptions = options.map((option) => (option as string).trim());
+  return normalizedText && normalizedOptions.every(Boolean)
+    ? { text: normalizedText, options: normalizedOptions }
+    : undefined;
+}
+
+function handleClientMessage(session: SessionRecord, client: ConnectedClient, payload: unknown): Promise<void> {
+  const previous = mutationQueues.get(session.code) ?? Promise.resolve();
+  const mutation = previous.catch(() => undefined).then(() => applyClientMessage(session, client, payload));
+  mutationQueues.set(session.code, mutation);
+  void mutation.finally(() => {
+    if (mutationQueues.get(session.code) === mutation) mutationQueues.delete(session.code);
+  }).catch(() => undefined);
+  return mutation;
+}
+
+async function applyClientMessage(session: SessionRecord, client: ConnectedClient, payload: unknown): Promise<void> {
+  let message: unknown;
+  try {
+    message = JSON.parse(String(payload));
+  } catch {
+    client.socket.close(4400, "Invalid session command");
+    return;
+  }
+
+  if (typeof message !== "object" || message === null || !("type" in message)) {
+    client.socket.close(4400, "Invalid session command");
+    return;
+  }
+  const { type } = message as { type: unknown };
+  let acceptedAnswerOptionId: string | undefined;
+
+  if (type === "start-question") {
+    const question = parseStartQuestion(message);
+    if (client.role !== "organizer" || session.activeQuestion || !question) {
+      client.socket.close(4400, "Invalid question");
+      return;
+    }
+    session.activeQuestion = {
+      id: crypto.randomUUID(),
+      text: question.text,
+      options: question.options.map((text) => ({ id: crypto.randomUUID(), text })),
+    } satisfies SingleChoiceQuestion;
+    session.questionState = "active";
+    session.responses = {};
+  } else if (type === "answer-question") {
+    const optionId = "optionId" in message ? (message as { optionId?: unknown }).optionId : undefined;
+    if (client.role !== "participant" || session.questionState !== "active" || !session.activeQuestion
+      || typeof optionId !== "string" || !session.activeQuestion.options.some((option) => option.id === optionId)) {
+      client.socket.close(4400, "Invalid answer");
+      return;
+    }
+    session.responses = { ...session.responses, [client.participantId]: optionId };
+    acceptedAnswerOptionId = optionId;
+  } else if (type === "close-question") {
+    if (client.role !== "organizer" || session.questionState !== "active") {
+      client.socket.close(4400, "Question cannot be closed");
+      return;
+    }
+    session.questionState = "closed";
+  } else if (type === "reveal-question") {
+    if (client.role !== "organizer" || session.questionState !== "closed") {
+      client.socket.close(4400, "Question cannot be revealed");
+      return;
+    }
+    session.questionState = "revealed";
+  } else {
+    client.socket.close(4400, "Invalid session command");
+    return;
+  }
+
+  if (!(await repository.update(session))) {
+    client.socket.close(1011, "Live session state changed");
+    return;
+  }
+  broadcast(session);
+  if (acceptedAnswerOptionId) {
+    client.socket.send(JSON.stringify({ type: "answer-accepted", optionId: acceptedAnswerOptionId }));
   }
 }
 
@@ -139,11 +291,9 @@ function scheduleExpiration(session: SessionRecord): void {
   }, delay));
 }
 
-function resetConnectionHub(): void {
-  const clients = [...clientsBySession.values()].flatMap((sessionClients) => [...sessionClients]);
-  clientsBySession.clear();
-  for (const timer of expirationTimers.values()) clearTimeout(timer);
-  expirationTimers.clear();
+function resetSessionConnections(code: string): void {
+  const clients = [...(clientsBySession.get(code) ?? [])];
+  clientsBySession.delete(code);
   for (const client of clients) client.socket.close(1012, "Backend restarting");
 }
 
@@ -227,8 +377,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 401, { error: "E2E authentication required" }, request);
       return;
     }
-    resetConnectionHub();
-    sendJson(response, 204, undefined, request);
+    const code = normalizeSessionCode(url.searchParams.get("session") ?? "");
+    if (!isSessionCode(code)) {
+      sendJson(response, 400, { error: "A live session code is required." }, request);
+      return;
+    }
+    resetSessionConnections(code);
+    sendEmpty(response, 204, request);
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/e2e/connection-count" && process.env.E2E_AUTH_TOKEN) {
@@ -273,10 +428,11 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
   }
 
   let role: ConnectedClient["role"] = "participant";
+  let principal: OrganizerPrincipal | undefined;
   const token = url.searchParams.get("token");
   if (token) {
     try {
-      const principal = await authenticateToken(token);
+      principal = await authenticateToken(token);
       role = samePrincipal(principal, session.organizer) ? "organizer" : "participant";
     } catch {
       socket.close(4401, "Named participant authentication failed");
@@ -305,22 +461,40 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
         socket.close(4405, "Password was not accepted");
         return;
       }
-      admitClient(session, socket, role);
+      admitClient(session, socket, role, principal, url.searchParams.get("participant"));
     });
     socket.send(JSON.stringify({ type: "join-required" }));
     return;
   }
 
-  admitClient(session, socket, role);
+  admitClient(session, socket, role, principal, url.searchParams.get("participant"));
 }
 
-function admitClient(session: SessionRecord, socket: WebSocket, role: ConnectedClient["role"]): void {
-  const client: ConnectedClient = { socket, role };
+function admitClient(
+  session: SessionRecord,
+  socket: WebSocket,
+  role: ConnectedClient["role"],
+  principal: OrganizerPrincipal | undefined,
+  anonymousParticipantId: string | null,
+): void {
+  const participantId = principal
+    ? `${principal.tid}:${principal.oid}`
+    : anonymousParticipantId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(anonymousParticipantId)
+      ? anonymousParticipantId
+      : crypto.randomUUID();
+  const client: ConnectedClient = { socket, role, participantId };
   const clients = clientsBySession.get(session.code) ?? new Set<ConnectedClient>();
   clients.add(client);
   clientsBySession.set(session.code, clients);
   scheduleExpiration(session);
   broadcast(session);
+
+  socket.on("message", (message) => {
+    void handleClientMessage(session, client, message).catch((error: unknown) => {
+      console.error("Client message failed", error);
+      socket.close(1011, "Live session service failed");
+    });
+  });
 
   socket.on("close", () => {
     clients.delete(client);
