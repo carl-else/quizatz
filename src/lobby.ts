@@ -65,6 +65,7 @@ export function connectToLobby(
   password: string | undefined,
   onSnapshot: (snapshot: LobbySnapshot) => void,
   onFailure: (message: string) => void,
+  onPasswordRequired: () => void,
 ): LobbyConnection {
   const code = normalizeSessionCode(rawCode);
   if (!isSessionCode(code)) throw new Error("Enter a six-character session code.");
@@ -87,6 +88,12 @@ export function connectToLobby(
         return;
       }
       if (message.type === "join-required") {
+        if (!password) {
+          stopped = true;
+          socket?.close(1000, "Password required");
+          onPasswordRequired();
+          return;
+        }
         socket?.send(JSON.stringify({ type: "join", password }));
         return;
       }

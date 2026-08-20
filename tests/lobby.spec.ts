@@ -125,6 +125,28 @@ test("an anonymous live session protects password entry and rejects named partic
   await organizerContext.close();
 });
 
+test("a password-protected invite link prompts for its password", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous", "correct horse battery staple");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await expect(participant.getByRole("alert")).toHaveText("Enter the password to join this live session.");
+  await expect(participant.getByLabel("Session code")).toHaveValue(code);
+  await participant.getByLabel(/Password \(if required\)/).fill("correct horse battery staple");
+  await participant.getByTitle("Join session").click();
+  await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
 test("a nonexistent session code has a clear error state", async ({ page }) => {
   await page.goto("/?session=000000");
   await expect(page.getByRole("alert")).toHaveText("That live session was not found or has expired.");

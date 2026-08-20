@@ -59,6 +59,10 @@ function useSocket(accessToken?: string) {
     (message) => {
       error.value = message;
     },
+    () => {
+      view.value = "home";
+      error.value = "Enter the password to join this live session.";
+    },
   );
 }
 
