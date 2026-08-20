@@ -63,6 +63,10 @@ function useSocket(accessToken?: string) {
       view.value = "home";
       error.value = "Enter the password to join this live session.";
     },
+    () => {
+      view.value = "home";
+      error.value = "Sign in to join this live session.";
+    },
   );
 }
 

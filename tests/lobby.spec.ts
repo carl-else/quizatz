@@ -53,7 +53,7 @@ test("an organizer creates a live session and an anonymous participant joins", a
   await organizerContext.close();
 });
 
-test("a named live session accepts a named participant and rejects anonymous entry", async ({ browser }) => {
+test("a named live-session invite prompts for sign-in and admits a named participant", async ({ browser }) => {
   const organizerContext = await browser.newContext();
   await organizerContext.addInitScript(() => {
     window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
@@ -62,10 +62,17 @@ test("a named live session accepts a named participant and rejects anonymous ent
   await organizer.goto("/");
   const code = await createSession(organizer, "named");
 
-  const anonymousContext = await browser.newContext();
-  const anonymousParticipant = await anonymousContext.newPage();
-  await anonymousParticipant.goto(`/?session=${code}`);
-  await expect(anonymousParticipant.getByRole("alert")).toHaveText("This live session requires named participation.");
+  const inviteeContext = await browser.newContext();
+  await inviteeContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-named-participant");
+  });
+  const invitee = await inviteeContext.newPage();
+  await invitee.goto(`/?session=${code}`);
+  await expect(invitee.getByRole("alert")).toHaveText("Sign in to join this live session.");
+  await expect(invitee.getByLabel("Session code")).toHaveValue(code);
+  await invitee.getByRole("button", { name: "Sign in to join" }).click();
+  await expect(invitee.getByRole("heading", { name: "You’re in." })).toBeVisible();
+  await expect(organizer.getByTestId("participant-count")).toHaveText("1");
 
   const namedContext = await browser.newContext();
   await namedContext.addInitScript(() => {
@@ -76,10 +83,10 @@ test("a named live session accepts a named participant and rejects anonymous ent
   await namedParticipant.getByLabel("Session code").fill(code);
   await namedParticipant.getByRole("button", { name: "Sign in to join" }).click();
   await expect(namedParticipant.getByRole("heading", { name: "You’re in." })).toBeVisible();
-  await expect(organizer.getByTestId("participant-count")).toHaveText("1");
+  await expect(organizer.getByTestId("participant-count")).toHaveText("2");
 
   await namedContext.close();
-  await anonymousContext.close();
+  await inviteeContext.close();
   await organizerContext.close();
 });
 

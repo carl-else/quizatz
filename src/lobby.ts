@@ -66,6 +66,7 @@ export function connectToLobby(
   onSnapshot: (snapshot: LobbySnapshot) => void,
   onFailure: (message: string) => void,
   onPasswordRequired: () => void,
+  onNamedParticipationRequired: () => void,
 ): LobbyConnection {
   const code = normalizeSessionCode(rawCode);
   if (!isSessionCode(code)) throw new Error("Enter a six-character session code.");
@@ -102,6 +103,11 @@ export function connectToLobby(
     });
     socket.addEventListener("close", (event) => {
       if (stopped || event.code === 1000) return;
+      if (event.code === 4403 && !accessToken) {
+        stopped = true;
+        onNamedParticipationRequired();
+        return;
+      }
       const messages: Record<number, string> = {
         4401: "Named participant authentication failed.",
         4403: "This live session requires named participation.",
