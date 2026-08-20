@@ -3,6 +3,7 @@ import {
   normalizeSessionCode,
   type ApiError,
   type CreateSessionOptions,
+  type LobbyMessage,
   type LobbySnapshot,
   type SessionCreated,
 } from "./protocol";
@@ -79,7 +80,7 @@ export function connectToLobby(
       reconnectAttempt = 0;
     });
     socket.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data)) as LobbySnapshot | { type: "expired" | "join-required" };
+      const message = JSON.parse(String(event.data)) as LobbyMessage;
       if (message.type === "expired") {
         stopped = true;
         onFailure("This live session has expired.");

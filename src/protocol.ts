@@ -10,6 +10,11 @@ export interface LobbySnapshot {
   expiresAt: string;
 }
 
+export type LobbyMessage =
+  | LobbySnapshot
+  | { type: "expired" }
+  | { type: "join-required" };
+
 export interface SessionCreated {
   code: string;
   expiresAt: string;
