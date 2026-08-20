@@ -1,6 +1,8 @@
 export const SESSION_CODE_LENGTH = 6;
 export const SESSION_LEASE_MS = 24 * 60 * 60 * 1000;
 
+export type SessionAccessPolicy = "anonymous" | "named";
+
 export interface LobbySnapshot {
   type: "lobby";
   sessionCode: string;
@@ -11,6 +13,11 @@ export interface LobbySnapshot {
 export interface SessionCreated {
   code: string;
   expiresAt: string;
+}
+
+export interface CreateSessionOptions {
+  accessPolicy: SessionAccessPolicy;
+  password?: string;
 }
 
 export interface ApiError {

@@ -26,6 +26,7 @@ export default defineConfig({
         TABLE_STORAGE_CONNECTION_STRING: "UseDevelopmentStorage=true",
         CREATE_TABLE_IF_MISSING: "true",
         E2E_AUTH_TOKEN: "playwright-only",
+        E2E_NAMED_PARTICIPANT_TOKEN: "playwright-named-participant",
         ALLOWED_ORIGINS: "http://127.0.0.1:4174",
       },
     },

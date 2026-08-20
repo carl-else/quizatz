@@ -1,12 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
+import { createPasswordVerification, verifiesPassword } from "./access-policy.js";
 import { authenticateToken, samePrincipal } from "./auth.js";
 import { TableSessionRepository, type SessionRecord } from "./session-repository.js";
 import {
   isSessionCode,
   normalizeSessionCode,
   SESSION_LEASE_MS,
+  type CreateSessionOptions,
   type LobbySnapshot,
   type SessionCreated,
 } from "../src/protocol.js";
@@ -71,6 +73,25 @@ function sessionCodeFrom(pathname: string, suffix = ""): string | undefined {
   if (!match) return undefined;
   const code = normalizeSessionCode(match[1]);
   return isSessionCode(code) ? code : undefined;
+}
+
+async function requestBody(request: IncomingMessage): Promise<unknown> {
+  let body = "";
+  for await (const chunk of request) {
+    body += String(chunk);
+    if (body.length > 2_048) throw new Error("Request body is too large");
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+function createSessionOptions(body: unknown): CreateSessionOptions | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const { accessPolicy, password } = body as Record<string, unknown>;
+  if ((accessPolicy !== "anonymous" && accessPolicy !== "named")
+    || (password !== undefined && (typeof password !== "string" || password.length > 128))) {
+    return undefined;
+  }
+  return { accessPolicy, password: password || undefined };
 }
 
 async function activeSession(code: string): Promise<SessionRecord | undefined> {
@@ -145,11 +166,25 @@ async function createSession(
     return;
   }
 
+  let options: CreateSessionOptions | undefined;
+  try {
+    options = createSessionOptions(await requestBody(request));
+  } catch {
+    options = undefined;
+  }
+  if (!options) {
+    sendJson(response, 400, { error: "Choose named or anonymous participation and use a password of 128 characters or fewer." }, request);
+    return;
+  }
+
   const now = Date.now();
   const session: SessionRecord = {
     code,
     organizer,
-    allowAnonymous: true,
+    accessPolicy: options.accessPolicy,
+    passwordVerification: options.password
+      ? await createPasswordVerification(options.password)
+      : undefined,
     createdAt: now,
     expiresAt: now + SESSION_LEASE_MS,
   };
@@ -242,30 +277,54 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
   if (token) {
     try {
       const principal = await authenticateToken(token);
-      if (!samePrincipal(principal, session.organizer)) {
-        socket.close(4403, "Organizer access denied");
-        return;
-      }
-      role = "organizer";
+      role = samePrincipal(principal, session.organizer) ? "organizer" : "participant";
     } catch {
-      socket.close(4401, "Organizer authentication failed");
+      socket.close(4401, "Named participant authentication failed");
       return;
     }
-  } else if (!session.allowAnonymous) {
-    socket.close(4403, "Anonymous participation is disabled");
+  } else if (session.accessPolicy !== "anonymous") {
+    socket.close(4403, "This live session requires named participation");
     return;
   }
 
+  if (role === "participant" && token && session.accessPolicy !== "named") {
+    socket.close(4406, "This live session only allows anonymous participation");
+    return;
+  }
+
+  if (role === "participant" && session.passwordVerification) {
+    socket.once("message", async (message) => {
+      let password: string | undefined;
+      try {
+        const join = JSON.parse(String(message)) as { type?: unknown; password?: unknown };
+        password = join.type === "join" && typeof join.password === "string" ? join.password : undefined;
+      } catch {
+        password = undefined;
+      }
+      if (!password || !(await verifiesPassword(password, session.passwordVerification ?? ""))) {
+        socket.close(4405, "Password was not accepted");
+        return;
+      }
+      admitClient(session, socket, role);
+    });
+    socket.send(JSON.stringify({ type: "join-required" }));
+    return;
+  }
+
+  admitClient(session, socket, role);
+}
+
+function admitClient(session: SessionRecord, socket: WebSocket, role: ConnectedClient["role"]): void {
   const client: ConnectedClient = { socket, role };
-  const clients = clientsBySession.get(code) ?? new Set<ConnectedClient>();
+  const clients = clientsBySession.get(session.code) ?? new Set<ConnectedClient>();
   clients.add(client);
-  clientsBySession.set(code, clients);
+  clientsBySession.set(session.code, clients);
   scheduleExpiration(session);
   broadcast(session);
 
   socket.on("close", () => {
     clients.delete(client);
-    if (clients.size === 0) clientsBySession.delete(code);
+    if (clients.size === 0) clientsBySession.delete(session.code);
     else broadcast(session);
   });
 }

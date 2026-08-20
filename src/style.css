@@ -153,6 +153,54 @@ h1, h2 {
 .ink-button:hover { background: #363c36; }
 .primary-button:disabled { cursor: wait; opacity: 0.65; }
 
+.secondary-button {
+  min-height: 48px;
+  border: 1px solid var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font-weight: 750;
+}
+.secondary-button:hover { background: rgba(255, 253, 247, 0.5); }
+.secondary-button:disabled { cursor: wait; opacity: 0.65; }
+
+.policy-fields { display: grid; gap: 16px; }
+.field-label, .password-field {
+  display: block;
+  color: #4e574f;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.segmented-control { display: grid; grid-template-columns: 1fr 1fr; margin-top: 8px; }
+.segmented-control button {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--chalk);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+.segmented-control button + button { border-left: 0; }
+.segmented-control button.selected { color: var(--chalk); background: var(--ink); }
+.password-field { margin-top: 16px; }
+.password-field span { color: #6a726b; font-weight: 650; text-transform: none; }
+.password-field input {
+  width: 100%;
+  height: 40px;
+  margin-top: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  color: var(--ink);
+  background: transparent;
+  outline: 0;
+}
+
 .join-form label, .share-block label, .session-code-block span {
   display: block;
   margin-bottom: 8px;
@@ -186,6 +234,7 @@ h1, h2 {
 
 .code-entry input::placeholder { color: rgba(29, 33, 29, 0.35); }
 .submit-code { border: 0; background: transparent; }
+.join-form .password-field { margin-top: 20px; }
 .error-message { margin: 24px 0 0; color: #a23520; font-weight: 700; }
 
 .lobby-view {

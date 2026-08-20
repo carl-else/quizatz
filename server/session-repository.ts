@@ -1,5 +1,6 @@
 import { TableClient, type TableEntityResult } from "@azure/data-tables";
 import { DefaultAzureCredential } from "@azure/identity";
+import type { SessionAccessPolicy } from "../src/protocol.js";
 
 const PARTITION_KEY = "live-session";
 const DEFAULT_TABLE_NAME = "LiveSessions";
@@ -13,7 +14,8 @@ export interface OrganizerPrincipal {
 export interface SessionRecord {
   code: string;
   organizer: OrganizerPrincipal;
-  allowAnonymous: boolean;
+  accessPolicy: SessionAccessPolicy;
+  passwordVerification?: string;
   createdAt: number;
   expiresAt: number;
   etag?: string;
@@ -23,7 +25,8 @@ interface SessionEntity {
   organizerOid: string;
   organizerTid: string;
   organizerName: string;
-  allowAnonymous: boolean;
+  accessPolicy: SessionAccessPolicy;
+  passwordVerification?: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -42,7 +45,8 @@ function toRecord(entity: TableEntityResult<SessionEntity>, code: string): Sessi
       tid: entity.organizerTid,
       name: entity.organizerName,
     },
-    allowAnonymous: entity.allowAnonymous,
+    accessPolicy: entity.accessPolicy,
+    passwordVerification: entity.passwordVerification,
     createdAt: entity.createdAt,
     expiresAt: entity.expiresAt,
     etag: entity.etag,
@@ -94,7 +98,8 @@ export class TableSessionRepository implements SessionRepository {
         organizerOid: session.organizer.oid,
         organizerTid: session.organizer.tid,
         organizerName: session.organizer.name,
-        allowAnonymous: session.allowAnonymous,
+        accessPolicy: session.accessPolicy,
+        passwordVerification: session.passwordVerification,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
       });

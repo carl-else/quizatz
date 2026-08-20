@@ -7,6 +7,9 @@ export async function authenticateToken(token: string): Promise<OrganizerPrincip
   if (process.env.E2E_AUTH_TOKEN && token === process.env.E2E_AUTH_TOKEN) {
     return { oid: "playwright", tid: "e2e", name: "Test organizer" };
   }
+  if (process.env.E2E_NAMED_PARTICIPANT_TOKEN && token === process.env.E2E_NAMED_PARTICIPANT_TOKEN) {
+    return { oid: "playwright-participant", tid: "e2e", name: "Test participant" };
+  }
 
   const tenantId = process.env.ENTRA_TENANT_ID;
   const audience = process.env.ENTRA_API_CLIENT_ID;

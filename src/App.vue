@@ -11,7 +11,12 @@ import {
 } from "@lucide/vue";
 import { signInOrganizer } from "./auth";
 import { connectToLobby, createLiveSession, type LobbyConnection } from "./lobby";
-import { isSessionCode, normalizeSessionCode, type LobbySnapshot } from "./protocol";
+import {
+  isSessionCode,
+  normalizeSessionCode,
+  type LobbySnapshot,
+  type SessionAccessPolicy,
+} from "./protocol";
 
 type View = "home" | "organizer" | "participant";
 
@@ -23,6 +28,8 @@ const snapshot = ref<LobbySnapshot>();
 const busy = ref(false);
 const error = ref("");
 const copied = ref(false);
+const accessPolicy = ref<SessionAccessPolicy>("anonymous");
+const password = ref("");
 const homeUrl = import.meta.env.BASE_URL;
 let socket: LobbyConnection | undefined;
 
@@ -44,6 +51,7 @@ function useSocket(accessToken?: string) {
   socket = connectToLobby(
     sessionCode.value,
     accessToken,
+    password.value || undefined,
     (nextSnapshot) => {
       snapshot.value = nextSnapshot;
       error.value = "";
@@ -61,7 +69,10 @@ async function createSession() {
     const identity = await signInOrganizer();
     organizerName.value = identity.displayName;
     organizerToken.value = identity.accessToken;
-    const created = await createLiveSession(identity.accessToken);
+    const created = await createLiveSession(identity.accessToken, {
+      accessPolicy: accessPolicy.value,
+      password: password.value || undefined,
+    });
     sessionCode.value = created.code;
     view.value = "organizer";
     useSocket(identity.accessToken);
@@ -80,6 +91,24 @@ function joinSession() {
   }
   view.value = "participant";
   useSocket();
+}
+
+async function joinNamedSession() {
+  if (!isSessionCode(sessionCode.value)) {
+    error.value = "Enter a six-character session code.";
+    return;
+  }
+  busy.value = true;
+  error.value = "";
+  try {
+    const identity = await signInOrganizer();
+    view.value = "participant";
+    useSocket(identity.accessToken);
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "Could not sign in to join the live session.";
+  } finally {
+    busy.value = false;
+  }
 }
 
 function leaveLobby() {
@@ -135,6 +164,29 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
             <h2 id="create-title">Create a session</h2>
             <p>Sign in with your work or school Microsoft account.</p>
           </div>
+          <div class="policy-fields">
+            <div>
+              <span class="field-label">Participation</span>
+              <div class="segmented-control" role="group" aria-label="Participation policy">
+                <button
+                  type="button"
+                  :aria-pressed="accessPolicy === 'anonymous'"
+                  :class="{ selected: accessPolicy === 'anonymous' }"
+                  @click="accessPolicy = 'anonymous'"
+                >Anonymous</button>
+                <button
+                  type="button"
+                  :aria-pressed="accessPolicy === 'named'"
+                  :class="{ selected: accessPolicy === 'named' }"
+                  @click="accessPolicy = 'named'"
+                >Named</button>
+              </div>
+            </div>
+            <label class="password-field" for="create-password">
+              Password <span>(optional)</span>
+              <input id="create-password" v-model="password" type="password" maxlength="128" autocomplete="new-password" />
+            </label>
+          </div>
           <button class="primary-button ink-button" type="button" :disabled="busy" @click="createSession">
             <LogIn :size="19" aria-hidden="true" />
             {{ busy ? "Signing in..." : "Sign in and create" }}
@@ -163,7 +215,15 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
                 <ArrowRight :size="21" aria-hidden="true" />
               </button>
             </div>
+            <label class="password-field" for="join-password">
+              Password <span>(if required)</span>
+              <input id="join-password" v-model="password" type="password" maxlength="128" autocomplete="current-password" />
+            </label>
           </form>
+          <button class="secondary-button" type="button" :disabled="busy" @click="joinNamedSession">
+            <LogIn :size="19" aria-hidden="true" />
+            {{ busy ? "Signing in..." : "Sign in to join" }}
+          </button>
         </section>
       </div>
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>

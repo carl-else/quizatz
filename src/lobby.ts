@@ -2,6 +2,7 @@ import {
   isSessionCode,
   normalizeSessionCode,
   type ApiError,
+  type CreateSessionOptions,
   type LobbySnapshot,
   type SessionCreated,
 } from "./protocol";
@@ -29,13 +30,20 @@ async function responseError(response: Response): Promise<string> {
   return body?.error ?? `The live-session service returned ${response.status}.`;
 }
 
-export async function createLiveSession(accessToken: string): Promise<SessionCreated> {
+export async function createLiveSession(
+  accessToken: string,
+  options: CreateSessionOptions,
+): Promise<SessionCreated> {
   const baseUrl = backendUrl();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const code = newSessionCode();
     const response = await fetch(new URL(`api/sessions/${code}`, baseUrl), {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(options),
     });
     if (response.ok) return (await response.json()) as SessionCreated;
     if (response.status !== 409) throw new Error(await responseError(response));
@@ -53,6 +61,7 @@ function socketUrl(code: string, accessToken: string | undefined): URL {
 export function connectToLobby(
   rawCode: string,
   accessToken: string | undefined,
+  password: string | undefined,
   onSnapshot: (snapshot: LobbySnapshot) => void,
   onFailure: (message: string) => void,
 ): LobbyConnection {
@@ -70,10 +79,14 @@ export function connectToLobby(
       reconnectAttempt = 0;
     });
     socket.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data)) as LobbySnapshot | { type: "expired" };
+      const message = JSON.parse(String(event.data)) as LobbySnapshot | { type: "expired" | "join-required" };
       if (message.type === "expired") {
         stopped = true;
         onFailure("This live session has expired.");
+        return;
+      }
+      if (message.type === "join-required") {
+        socket?.send(JSON.stringify({ type: "join", password }));
         return;
       }
       receivedSnapshot = true;
@@ -82,9 +95,11 @@ export function connectToLobby(
     socket.addEventListener("close", (event) => {
       if (stopped || event.code === 1000) return;
       const messages: Record<number, string> = {
-        4401: "Organizer authentication failed.",
-        4403: "This live session does not allow anonymous participants.",
+        4401: "Named participant authentication failed.",
+        4403: "This live session requires named participation.",
         4404: "That live session was not found or has expired.",
+        4405: "The password is incorrect.",
+        4406: "This live session only allows anonymous participation.",
         4408: "This live session has expired.",
       };
       const terminalMessage = messages[event.code];
