@@ -18,6 +18,7 @@ import {
   type OpenEndedResult,
   type Question,
   type QuestionState,
+  type RevealedQuestionResult,
   type SessionAccessPolicy,
   type SessionQuestion,
   type SingleChoiceResult,
@@ -50,6 +51,9 @@ const questionOptions = ref(["", ""]);
 const timerSeconds = ref("");
 const authoredQuestions = ref<SessionQuestion[]>([]);
 const activeQuestionIndex = ref<number>();
+const finalSummary = ref<RevealedQuestionResult[]>();
+const sessionEnded = ref(false);
+const sessionExpired = ref(false);
 const homeUrl = import.meta.env.BASE_URL;
 const AUTHENTICATED_RECOVERY_SESSION_KEY = "quizatz:authenticated-recovery-session";
 let socket: LobbyConnection | undefined;
@@ -113,6 +117,7 @@ function useSocket(accessToken?: string) {
         }
       } else if (nextSnapshot.type === "lobby") {
         snapshot.value = nextSnapshot;
+        finalSummary.value = undefined;
         activeQuestion.value = undefined;
         questionState.value = undefined;
         questionResult.value = undefined;
@@ -153,6 +158,12 @@ function useSocket(accessToken?: string) {
         activeQuestion.value = nextSnapshot.question;
         questionState.value = "revealed";
         questionResult.value = nextSnapshot.result;
+      } else if (nextSnapshot.type === "final-summary") {
+        snapshot.value = undefined;
+        activeQuestion.value = undefined;
+        questionState.value = undefined;
+        questionResult.value = undefined;
+        finalSummary.value = nextSnapshot.results;
       }
       error.value = "";
     },
@@ -179,6 +190,26 @@ function useSocket(accessToken?: string) {
         hasSubmittedOpenEndedAnswer.value = true;
         answerStatus.value = "Answer saved.";
       }
+    },
+    () => {
+      snapshot.value = undefined;
+      activeQuestion.value = undefined;
+      questionState.value = undefined;
+      questionResult.value = undefined;
+      finalSummary.value = undefined;
+      sessionEnded.value = true;
+      view.value = "home";
+      error.value = "";
+    },
+    () => {
+      snapshot.value = undefined;
+      activeQuestion.value = undefined;
+      questionState.value = undefined;
+      questionResult.value = undefined;
+      finalSummary.value = undefined;
+      sessionExpired.value = true;
+      view.value = "home";
+      error.value = "";
     },
   );
 }
@@ -271,9 +302,15 @@ function revealQuestion() {
   socket?.revealQuestion();
 }
 
+function endLiveSession() {
+  socket?.endLiveSession();
+}
+
 async function createSession() {
   busy.value = true;
   error.value = "";
+  sessionEnded.value = false;
+  sessionExpired.value = false;
   try {
     const identity = await signInOrganizer();
     organizerName.value = identity.displayName;
@@ -294,6 +331,8 @@ async function createSession() {
 
 function joinSession() {
   error.value = "";
+  sessionEnded.value = false;
+  sessionExpired.value = false;
   if (!isSessionCode(sessionCode.value)) {
     error.value = "Enter a six-character session code.";
     return;
@@ -310,6 +349,8 @@ async function joinNamedSession() {
   }
   busy.value = true;
   error.value = "";
+  sessionEnded.value = false;
+  sessionExpired.value = false;
   try {
     const identity = await signInOrganizer();
     organizerName.value = identity.displayName;
@@ -336,6 +377,9 @@ function leaveLobby() {
   resetQuestionInput();
   authoredQuestions.value = [];
   activeQuestionIndex.value = undefined;
+  finalSummary.value = undefined;
+  sessionEnded.value = false;
+  sessionExpired.value = false;
   startAfterAuthoring = false;
   clearAuthenticatedRecovery();
   organizerToken.value = "";
@@ -348,6 +392,8 @@ async function recoverAuthenticatedSession(code: string) {
   view.value = "participant";
   busy.value = true;
   error.value = "";
+  sessionEnded.value = false;
+  sessionExpired.value = false;
   try {
     const identity = await signInOrganizer();
     organizerName.value = identity.displayName;
@@ -394,7 +440,45 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
       <div class="connection-mark"><Radio :size="16" aria-hidden="true" /> Live</div>
     </header>
 
-    <main v-if="view === 'home'" class="home-view">
+    <main v-if="finalSummary" class="lobby-view participant-lobby">
+      <section class="participant-status">
+        <p class="eyebrow">Live session ended</p>
+        <h1>Final summary</h1>
+        <article v-for="entry in finalSummary" :key="entry.question.id">
+          <h2>{{ entry.question.text }}</h2>
+          <template v-if="entry.question.kind === 'single-choice' && 'options' in entry.result">
+            <ul aria-label="Single-choice result">
+              <li v-for="option in entry.result.options" :key="option.id">
+                {{ option.text }}: {{ option.responseCount }} {{ option.responseCount === 1 ? "response" : "responses" }} ({{ option.percentage }}%)
+              </li>
+            </ul>
+            <p>{{ entry.result.totalResponseCount }} {{ entry.result.totalResponseCount === 1 ? "response" : "responses" }} total</p>
+          </template>
+          <template v-else-if="entry.question.kind === 'open-ended' && 'entries' in entry.result">
+            <ol aria-label="Open-ended result">
+              <li v-for="result in entry.result.entries" :key="result.text">
+                {{ result.text }}: {{ result.responseCount }} {{ result.responseCount === 1 ? "response" : "responses" }}
+              </li>
+            </ol>
+            <p>{{ entry.result.totalResponseCount }} {{ entry.result.totalResponseCount === 1 ? "response" : "responses" }} total</p>
+          </template>
+        </article>
+      </section>
+    </main>
+
+    <main v-else-if="sessionEnded" class="lobby-view participant-lobby">
+      <section class="participant-status">
+        <h1>This live session has ended.</h1>
+      </section>
+    </main>
+
+    <main v-else-if="sessionExpired" class="lobby-view participant-lobby">
+      <section class="participant-status">
+        <h1>This live session has expired.</h1>
+      </section>
+    </main>
+
+    <main v-else-if="view === 'home'" class="home-view">
       <section class="intro">
         <p class="eyebrow">Live questioning</p>
         <h1>Quizatz</h1>
@@ -556,6 +640,9 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         </button>
         <button v-else-if="questionState === 'revealed' && nextQuestion" class="primary-button ink-button" type="button" @click="startNextQuestion">
           Start next question
+        </button>
+        <button v-if="questionState === 'revealed'" class="secondary-button" type="button" @click="endLiveSession">
+          End live session
         </button>
         <template v-if="questionState === 'closed' && activeQuestion.kind === 'open-ended' && openEndedResult">
           <h3>Consolidate responses</h3>

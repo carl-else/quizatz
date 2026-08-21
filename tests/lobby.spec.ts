@@ -53,6 +53,133 @@ test("an organizer creates a live session and an anonymous participant joins", a
   await organizerContext.close();
 });
 
+test("ending a live session preserves its final summary only for current participants", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which first result should remain visible?");
+  await organizer.getByLabel("Option 1").fill("First result");
+  await organizer.getByLabel("Option 2").fill("Other first result");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which second result should remain visible?");
+  await organizer.getByLabel("Option 1").fill("Second result");
+  await organizer.getByLabel("Option 2").fill("Other second result");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+  await participant.getByRole("radio", { name: "First result", exact: true }).check();
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await organizer.getByRole("button", { name: "Start next question" }).click();
+  await participant.getByRole("radio", { name: "Second result", exact: true }).check();
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await organizer.getByRole("button", { name: "End live session" }).click();
+
+  await expect(participant.getByRole("heading", { name: "Final summary" })).toBeVisible();
+  await expect(participant.getByText("Which first result should remain visible?")).toBeVisible();
+  await expect(participant.getByText("Which second result should remain visible?")).toBeVisible();
+  await expect(participant.getByText("1 response total")).toHaveCount(2);
+
+  await participant.reload();
+  await expect(participant.getByRole("heading", { name: "This live session has ended." })).toBeVisible();
+
+  const lateParticipantContext = await browser.newContext();
+  const lateParticipant = await lateParticipantContext.newPage();
+  await lateParticipant.goto(`/?session=${code}`);
+  await expect(lateParticipant.getByRole("heading", { name: "This live session has ended." })).toBeVisible();
+
+  await lateParticipantContext.close();
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("lease expiry suppresses content and retries cleanup after backend replacement", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Content that must not survive expiry");
+  await organizer.getByLabel("Option 1").fill("Visible before expiry");
+  await organizer.getByLabel("Option 2").fill("Also visible before expiry");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+  await expect(participant.getByRole("heading", { name: "Content that must not survive expiry" })).toBeVisible();
+
+  const firstCleanupStatus = await participant.evaluate(async (sessionCode) => {
+    const response = await fetch(`http://127.0.0.1:3000/api/e2e/cleanup-failures?session=${sessionCode}&count=1`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+    return response.status;
+  }, code);
+  expect(firstCleanupStatus).toBe(204);
+
+  const clockStatus = await participant.evaluate(async (sessionCode) => {
+    const response = await fetch(`http://127.0.0.1:3000/api/e2e/clock?session=${sessionCode}&advanceMs=86400000`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+    return response.status;
+  }, code);
+  expect(clockStatus).toBe(204);
+
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  await expect(participant.getByRole("heading", { name: "This live session has expired." })).toBeVisible();
+  await expect(participant.getByText("Content that must not survive expiry")).toHaveCount(0);
+
+  const pendingCleanup = await participant.evaluate(async (sessionCode) => {
+    const response = await fetch(`http://127.0.0.1:3000/api/e2e/session-state?session=${sessionCode}`, {
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+    return response.json() as Promise<{ exists: boolean; cleanupAttempts?: number }>;
+  }, code);
+  expect(pendingCleanup).toEqual({ exists: true, cleanupAttempts: 1 });
+
+  const lateParticipantContext = await browser.newContext();
+  const lateParticipant = await lateParticipantContext.newPage();
+  await lateParticipant.goto(`/?session=${code}`);
+  await expect(lateParticipant.getByRole("heading", { name: "This live session has expired." })).toBeVisible();
+  await expect(lateParticipant.getByText("Content that must not survive expiry")).toHaveCount(0);
+
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  const completedCleanup = await participant.evaluate(async (sessionCode) => {
+    const response = await fetch(`http://127.0.0.1:3000/api/e2e/session-state?session=${sessionCode}`, {
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+    return response.json() as Promise<{ exists: boolean }>;
+  }, code);
+  expect(completedCleanup).toEqual({ exists: false });
+
+  await lateParticipantContext.close();
+  await participantContext.close();
+  await organizerContext.close();
+});
+
 test("a named live-session invite prompts for sign-in and admits a named participant", async ({ browser }) => {
   const organizerContext = await browser.newContext();
   await organizerContext.addInitScript(() => {

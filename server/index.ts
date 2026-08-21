@@ -21,6 +21,7 @@ import {
   type Question,
   type QuestionDefinition,
   type QuestionState,
+  type RevealedQuestionResult,
   type SessionQuestion,
   type SessionCreated,
   type SingleChoiceResult,
@@ -50,8 +51,12 @@ const clientsBySession = new Map<string, Set<ConnectedClient>>();
 const cachedSessions = new Map<string, SessionRecord>();
 const expirationTimers = new Map<string, NodeJS.Timeout>();
 const questionTimers = new Map<string, NodeJS.Timeout>();
+const cleanupTimers = new Map<string, NodeJS.Timeout>();
 const mutationQueues = new Map<string, Promise<void>>();
+const e2eTimes = new Map<string, number>();
+const e2eCleanupFailures = new Map<string, number>();
 const webSockets = new WebSocketServer({ noServer: true });
+const CLEANUP_RETRY_MS = 60_000;
 
 function configuredOrigins(): string[] {
   return (process.env.ALLOWED_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:4174")
@@ -94,6 +99,10 @@ function e2eAuthorized(request: IncomingMessage): boolean {
   );
 }
 
+function sessionNow(code: string): number {
+  return e2eTimes.get(code) ?? Date.now();
+}
+
 function sessionCodeFrom(pathname: string, suffix = ""): string | undefined {
   const match = pathname.match(new RegExp(`^/api/sessions/([A-Za-z0-9]{6})${suffix}$`));
   if (!match) return undefined;
@@ -123,25 +132,90 @@ function createSessionOptions(body: unknown): CreateSessionOptions | undefined {
 async function activeSession(code: string): Promise<SessionRecord | undefined> {
   const session = cachedSessions.get(code) ?? await repository.get(code);
   if (!session) return undefined;
-  if (session.expiresAt > Date.now()) {
-    if (session.questionState === "active" && session.timerDeadline && session.timerDeadline <= Date.now()) {
-      session.questionState = "closed";
-      session.timerDeadline = undefined;
-      updateActiveQuestionState(session, "closed");
-      clearQuestionTimer(code);
-      if (!(await repository.update(session))) {
-        cachedSessions.delete(code);
-        return activeSession(code);
-      }
-      broadcast(session);
-    }
+  const now = sessionNow(code);
+  if (session.expiredAt || session.expiresAt <= now) {
+    await expireSession(session);
+    return session;
+  }
+  if (session.endedAt) {
     cachedSessions.set(code, session);
     return session;
   }
-  await repository.delete(session);
-  cachedSessions.delete(code);
-  expireConnections(code);
-  return undefined;
+  if (session.questionState === "active" && session.timerDeadline && session.timerDeadline <= now) {
+    session.questionState = "closed";
+    session.timerDeadline = undefined;
+    updateActiveQuestionState(session, "closed");
+    clearQuestionTimer(code);
+    if (!(await repository.update(session))) {
+      cachedSessions.delete(code);
+      return activeSession(code);
+    }
+    broadcast(session);
+  }
+  cachedSessions.set(code, session);
+  return session;
+}
+
+function clearCleanupTimer(code: string): void {
+  const timer = cleanupTimers.get(code);
+  if (timer) clearTimeout(timer);
+  cleanupTimers.delete(code);
+}
+
+function scheduleCleanup(session: SessionRecord): void {
+  clearCleanupTimer(session.code);
+  if (!session.cleanupDeadline || session.cleanupDeadline <= sessionNow(session.code)) return;
+  const delay = Math.min(CLEANUP_RETRY_MS, session.cleanupDeadline - sessionNow(session.code));
+  cleanupTimers.set(session.code, setTimeout(() => {
+    void attemptCleanup(session).catch((error: unknown) => console.error("Session cleanup failed", error));
+  }, delay));
+}
+
+async function attemptCleanup(session: SessionRecord): Promise<void> {
+  const now = sessionNow(session.code);
+  if (!session.cleanupDeadline || session.cleanupDeadline <= now) {
+    clearCleanupTimer(session.code);
+    if (!session.cleanupAlertedAt) {
+      session.cleanupAlertedAt = now;
+      await repository.update(session);
+      console.error("Live session cleanup needs manual follow-up", { sessionCode: session.code });
+    }
+    return;
+  }
+
+  session.cleanupAttempts = (session.cleanupAttempts ?? 0) + 1;
+  const remainingFailures = e2eCleanupFailures.get(session.code) ?? 0;
+  if (remainingFailures > 0) {
+    e2eCleanupFailures.set(session.code, remainingFailures - 1);
+    if (await repository.update(session)) cachedSessions.set(session.code, session);
+    scheduleCleanup(session);
+    return;
+  }
+  if (await repository.delete(session)) {
+    cachedSessions.delete(session.code);
+    clearCleanupTimer(session.code);
+    e2eTimes.delete(session.code);
+    return;
+  }
+  scheduleCleanup(session);
+}
+
+async function expireSession(session: SessionRecord): Promise<void> {
+  if (!session.expiredAt) {
+    const now = sessionNow(session.code);
+    session.expiredAt = now;
+    session.cleanupDeadline = now + SESSION_LEASE_MS;
+    session.cleanupAttempts = 0;
+    if (!(await repository.update(session))) {
+      cachedSessions.delete(session.code);
+      const replacement = await repository.get(session.code);
+      if (replacement) await expireSession(replacement);
+      return;
+    }
+  }
+  cachedSessions.set(session.code, session);
+  expireConnections(session.code);
+  await attemptCleanup(session);
 }
 
 function lobbySnapshot(session: SessionRecord): LobbySnapshot {
@@ -189,7 +263,14 @@ function openEndedResult(session: SessionRecord): OpenEndedResult {
   };
 }
 
+function revealedQuestionResult(session: SessionRecord, question: Question): RevealedQuestionResult {
+  return question.kind === "single-choice"
+    ? { question, result: singleChoiceResult(session, question) }
+    : { question, result: openEndedResult(session) };
+}
+
 function sessionMessage(session: SessionRecord, client: ConnectedClient): LobbyMessage {
+  if (session.endedAt) return { type: "final-summary", results: session.finalSummary ?? [] };
   if (!session.activeQuestion || !session.questionState) return lobbySnapshot(session);
   switch (session.questionState) {
     case "upcoming":
@@ -301,7 +382,7 @@ function activateQuestion(session: SessionRecord, index: number): void {
   sessionQuestion.state = "active";
   session.responses = {};
   session.timerDeadline = sessionQuestion.timerSeconds
-    ? Date.now() + sessionQuestion.timerSeconds * 1_000
+    ? sessionNow(session.code) + sessionQuestion.timerSeconds * 1_000
     : undefined;
 }
 
@@ -324,7 +405,7 @@ function scheduleQuestionTimer(session: SessionRecord): void {
     void closeQuestionAtDeadline(session.code, deadline).catch((error: unknown) => {
       console.error("Question timer failed", error);
     });
-  }, Math.max(0, deadline - Date.now())));
+  }, Math.max(0, deadline - sessionNow(session.code))));
 }
 
 function queueSessionMutation(session: SessionRecord, mutation: () => Promise<void>): Promise<void> {
@@ -355,6 +436,14 @@ function handleClientMessage(session: SessionRecord, client: ConnectedClient, pa
 }
 
 async function applyClientMessage(session: SessionRecord, client: ConnectedClient, payload: unknown): Promise<void> {
+  if (session.expiredAt || session.expiresAt <= sessionNow(session.code)) {
+    await expireSession(session);
+    return;
+  }
+  if (session.endedAt) {
+    client.socket.close(4409, "Live session ended");
+    return;
+  }
   let message: unknown;
   try {
     message = JSON.parse(String(payload));
@@ -470,6 +559,16 @@ async function applyClientMessage(session: SessionRecord, client: ConnectedClien
     }
     session.questionState = "revealed";
     updateActiveQuestionState(session, "revealed");
+    if (session.activeQuestion) {
+      session.finalSummary = [...(session.finalSummary ?? []), revealedQuestionResult(session, session.activeQuestion)];
+    }
+  } else if (type === "end-live-session") {
+    if (client.role !== "organizer" || session.questionState !== "revealed" || !session.finalSummary?.length) {
+      client.socket.close(4400, "Live session cannot be ended");
+      return;
+    }
+    session.endedAt = Date.now();
+    clearQuestionTimer(session.code);
   } else {
     client.socket.close(4400, "Invalid session command");
     return;
@@ -500,7 +599,7 @@ function expireConnections(code: string): void {
 
 function scheduleExpiration(session: SessionRecord): void {
   if (expirationTimers.has(session.code)) return;
-  const delay = Math.max(0, session.expiresAt - Date.now());
+  const delay = Math.max(0, session.expiresAt - sessionNow(session.code));
   expirationTimers.set(session.code, setTimeout(() => {
     void activeSession(session.code).catch((error: unknown) => console.error("Session expiration failed", error));
   }, delay));
@@ -590,6 +689,52 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/e2e/cleanup-failures" && process.env.E2E_AUTH_TOKEN) {
+    if (!e2eAuthorized(request)) {
+      sendJson(response, 401, { error: "E2E authentication required" }, request);
+      return;
+    }
+    const code = normalizeSessionCode(url.searchParams.get("session") ?? "");
+    const count = Number(url.searchParams.get("count"));
+    if (!isSessionCode(code) || !Number.isInteger(count) || count < 0) {
+      sendJson(response, 400, { error: "A live session code and non-negative failure count are required." }, request);
+      return;
+    }
+    e2eCleanupFailures.set(code, count);
+    sendEmpty(response, 204, request);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/e2e/clock" && process.env.E2E_AUTH_TOKEN) {
+    if (!e2eAuthorized(request)) {
+      sendJson(response, 401, { error: "E2E authentication required" }, request);
+      return;
+    }
+    const code = normalizeSessionCode(url.searchParams.get("session") ?? "");
+    const advanceMs = Number(url.searchParams.get("advanceMs"));
+    if (!isSessionCode(code) || !Number.isInteger(advanceMs) || advanceMs < 0) {
+      sendJson(response, 400, { error: "A live session code and non-negative clock advance are required." }, request);
+      return;
+    }
+    e2eTimes.set(code, Date.now() + advanceMs);
+    sendEmpty(response, 204, request);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/e2e/session-state" && process.env.E2E_AUTH_TOKEN) {
+    if (!e2eAuthorized(request)) {
+      sendJson(response, 401, { error: "E2E authentication required" }, request);
+      return;
+    }
+    const code = normalizeSessionCode(url.searchParams.get("session") ?? "");
+    if (!isSessionCode(code)) {
+      sendJson(response, 400, { error: "A live session code is required." }, request);
+      return;
+    }
+    const session = await repository.get(code);
+    sendJson(response, 200, session
+      ? { exists: true, cleanupAttempts: session.cleanupAttempts ?? 0 }
+      : { exists: false }, request);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/e2e/reset-connections" && process.env.E2E_AUTH_TOKEN) {
     if (!e2eAuthorized(request)) {
       sendJson(response, 401, { error: "E2E authentication required" }, request);
@@ -642,6 +787,14 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
   const session = await activeSession(code);
   if (!session) {
     socket.close(4404, "Live session not found or expired");
+    return;
+  }
+  if (session.expiredAt || session.expiresAt <= sessionNow(session.code)) {
+    socket.close(4408, "Live session expired");
+    return;
+  }
+  if (session.endedAt) {
+    socket.close(4409, "Live session ended");
     return;
   }
 
@@ -723,6 +876,20 @@ function admitClient(
   });
 }
 
+async function rehydrateSessionLifecycles(): Promise<void> {
+  for (const session of await repository.list()) {
+    if (session.expiredAt || session.expiresAt <= sessionNow(session.code)) {
+      await expireSession(session);
+    } else {
+      cachedSessions.set(session.code, session);
+      if (!session.endedAt) {
+        scheduleExpiration(session);
+        scheduleQuestionTimer(session);
+      }
+    }
+  }
+}
+
 const server = createServer((request, response) => {
   void handleRequest(request, response).catch((error: unknown) => {
     console.error("Request failed", error);
@@ -738,4 +905,5 @@ server.on("upgrade", (request, socket, head) => {
   }
   acceptClient(request, socket, head);
 });
+await rehydrateSessionLifecycles();
 server.listen(port, "0.0.0.0", () => console.log(`Quizatz backend listening on ${port}`));

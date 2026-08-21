@@ -1,6 +1,13 @@
 import { TableClient, type TableEntityResult } from "@azure/data-tables";
 import { DefaultAzureCredential } from "@azure/identity";
-import type { Question, QuestionState, SessionAccessPolicy, SessionQuestion, SingleChoiceQuestion } from "../src/protocol.js";
+import type {
+  Question,
+  QuestionState,
+  RevealedQuestionResult,
+  SessionAccessPolicy,
+  SessionQuestion,
+  SingleChoiceQuestion,
+} from "../src/protocol.js";
 
 const PARTITION_KEY = "live-session";
 const DEFAULT_TABLE_NAME = "LiveSessions";
@@ -24,6 +31,12 @@ export interface SessionRecord {
   responses?: Record<string, string>;
   createdAt: number;
   expiresAt: number;
+  endedAt?: number;
+  finalSummary?: RevealedQuestionResult[];
+  expiredAt?: number;
+  cleanupDeadline?: number;
+  cleanupAttempts?: number;
+  cleanupAlertedAt?: number;
   etag?: string;
 }
 
@@ -41,6 +54,12 @@ interface SessionEntity {
   responses?: string;
   createdAt: number;
   expiresAt: number;
+  endedAt?: number;
+  finalSummary?: string;
+  expiredAt?: number;
+  cleanupDeadline?: number;
+  cleanupAttempts?: number;
+  cleanupAlertedAt?: number;
 }
 
 interface StoredSingleChoiceQuestion {
@@ -101,6 +120,7 @@ function storedQuestions(session: SessionRecord): string | undefined {
 export interface SessionRepository {
   create(session: SessionRecord): Promise<boolean>;
   get(code: string): Promise<SessionRecord | undefined>;
+  list(): Promise<SessionRecord[]>;
   update(session: SessionRecord): Promise<boolean>;
   delete(session: SessionRecord): Promise<boolean>;
 }
@@ -123,6 +143,12 @@ function toRecord(entity: TableEntityResult<SessionEntity>, code: string): Sessi
     responses: entity.responses ? JSON.parse(entity.responses) as Record<string, string> : undefined,
     createdAt: entity.createdAt,
     expiresAt: entity.expiresAt,
+    endedAt: entity.endedAt,
+    finalSummary: entity.finalSummary ? JSON.parse(entity.finalSummary) as RevealedQuestionResult[] : undefined,
+    expiredAt: entity.expiredAt,
+    cleanupDeadline: entity.cleanupDeadline,
+    cleanupAttempts: entity.cleanupAttempts,
+    cleanupAlertedAt: entity.cleanupAlertedAt,
     etag: entity.etag,
   };
 }
@@ -182,6 +208,12 @@ export class TableSessionRepository implements SessionRepository {
         responses: session.responses ? JSON.stringify(session.responses) : undefined,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
+        endedAt: session.endedAt,
+        finalSummary: session.finalSummary ? JSON.stringify(session.finalSummary) : undefined,
+        expiredAt: session.expiredAt,
+        cleanupDeadline: session.cleanupDeadline,
+        cleanupAttempts: session.cleanupAttempts,
+        cleanupAlertedAt: session.cleanupAlertedAt,
       });
       return true;
     } catch (error) {
@@ -197,6 +229,16 @@ export class TableSessionRepository implements SessionRepository {
       if (statusCode(error) === 404) return undefined;
       throw error;
     }
+  }
+
+  async list(): Promise<SessionRecord[]> {
+    const sessions: SessionRecord[] = [];
+    for await (const entity of this.client.listEntities<SessionEntity>({
+      queryOptions: { filter: `PartitionKey eq '${PARTITION_KEY}'` },
+    })) {
+      if (entity.rowKey) sessions.push(toRecord(entity, entity.rowKey));
+    }
+    return sessions;
   }
 
   async update(session: SessionRecord): Promise<boolean> {
@@ -217,6 +259,12 @@ export class TableSessionRepository implements SessionRepository {
         responses: session.responses ? JSON.stringify(session.responses) : undefined,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
+        endedAt: session.endedAt,
+        finalSummary: session.finalSummary ? JSON.stringify(session.finalSummary) : undefined,
+        expiredAt: session.expiredAt,
+        cleanupDeadline: session.cleanupDeadline,
+        cleanupAttempts: session.cleanupAttempts,
+        cleanupAlertedAt: session.cleanupAlertedAt,
       }, "Replace", { etag: session.etag });
       const updated = await this.get(session.code);
       if (!updated) return false;

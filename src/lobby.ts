@@ -6,6 +6,7 @@ import {
   type ConnectionRole,
   type CreateSessionOptions,
   type EditNextQuestionCommand,
+  type EndLiveSessionCommand,
   type LobbyMessage,
   type LobbySnapshot,
   type QuestionDefinition,
@@ -26,6 +27,7 @@ export interface LobbyConnection {
   mergeOpenEndedResult(sourceText: string, targetText: string): void;
   closeQuestion(): void;
   revealQuestion(): void;
+  endLiveSession(): void;
 }
 
 function backendUrl(): URL {
@@ -92,6 +94,8 @@ export function connectToLobby(
   onPasswordRequired: () => void,
   onNamedParticipationRequired: () => void,
   onAnswerAccepted: (answer: AnswerAcceptedMessage) => void,
+  onSessionEnded: () => void,
+  onSessionExpired: () => void,
 ): LobbyConnection {
   const code = normalizeSessionCode(rawCode);
   if (!isSessionCode(code)) throw new Error("Enter a six-character session code.");
@@ -115,7 +119,7 @@ export function connectToLobby(
       }
       if (message.type === "expired") {
         stopped = true;
-        onFailure("This live session has expired.");
+        onSessionExpired();
         return;
       }
       if (message.type === "join-required") {
@@ -142,13 +146,22 @@ export function connectToLobby(
         onNamedParticipationRequired();
         return;
       }
+      if (event.code === 4409) {
+        stopped = true;
+        onSessionEnded();
+        return;
+      }
+      if (event.code === 4408) {
+        stopped = true;
+        onSessionExpired();
+        return;
+      }
       const messages: Record<number, string> = {
         4401: "Named participant authentication failed.",
         4403: "This live session requires named participation.",
         4404: "That live session was not found or has expired.",
         4405: "The password is incorrect.",
         4406: "This live session only allows anonymous participation.",
-        4408: "This live session has expired.",
       };
       const terminalMessage = messages[event.code];
       if (terminalMessage) {
@@ -194,6 +207,9 @@ export function connectToLobby(
     },
     revealQuestion() {
       socket?.send(JSON.stringify({ type: "reveal-question" }));
+    },
+    endLiveSession() {
+      socket?.send(JSON.stringify({ type: "end-live-session" } satisfies EndLiveSessionCommand));
     },
     close(closeCode = 1000, reason) {
       stopped = true;

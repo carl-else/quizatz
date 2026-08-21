@@ -88,6 +88,10 @@ export interface RevealQuestionCommand {
   type: "reveal-question";
 }
 
+export interface EndLiveSessionCommand {
+  type: "end-live-session";
+}
+
 export interface SingleChoiceResult {
   options: Array<SingleChoiceOption & { responseCount: number; percentage: number }>;
   totalResponseCount: number;
@@ -102,6 +106,10 @@ export interface OpenEndedResult {
   entries: OpenEndedResultEntry[];
   totalResponseCount: number;
 }
+
+export type RevealedQuestionResult =
+  | { question: SingleChoiceQuestion; result: SingleChoiceResult }
+  | { question: OpenEndedQuestion; result: OpenEndedResult };
 
 export interface LobbySnapshot {
   type: "lobby";
@@ -161,6 +169,11 @@ export interface AnswerAcceptedMessage {
   text?: string;
 }
 
+export interface FinalSummarySnapshot {
+  type: "final-summary";
+  results: RevealedQuestionResult[];
+}
+
 export type LobbyMessage =
   | LobbySnapshot
   | ActiveQuestionSnapshot
@@ -170,6 +183,7 @@ export type LobbyMessage =
   | ClosedOpenEndedQuestionSnapshot
   | RevealedQuestionSnapshot
   | AnswerAcceptedMessage
+  | FinalSummarySnapshot
   | { type: "expired" }
   | { type: "join-required" };
 
