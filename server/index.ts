@@ -13,6 +13,7 @@ import {
   normalizeSessionCode,
   SESSION_LEASE_MS,
   type CreateSessionOptions,
+  type ConnectionRole,
   type LobbyMessage,
   type LobbySnapshot,
   type OpenEndedResult,
@@ -28,7 +29,7 @@ import {
 
 interface ConnectedClient {
   socket: WebSocket;
-  role: "organizer" | "participant";
+  role: ConnectionRole;
   participantId: string;
 }
 
@@ -188,7 +189,7 @@ function openEndedResult(session: SessionRecord): OpenEndedResult {
   };
 }
 
-function sessionMessage(session: SessionRecord, role: ConnectedClient["role"]): LobbyMessage {
+function sessionMessage(session: SessionRecord, client: ConnectedClient): LobbyMessage {
   if (!session.activeQuestion || !session.questionState) return lobbySnapshot(session);
   switch (session.questionState) {
     case "upcoming":
@@ -198,9 +199,10 @@ function sessionMessage(session: SessionRecord, role: ConnectedClient["role"]): 
         type: "active-question",
         question: session.activeQuestion,
         timerDeadline: session.timerDeadline ? new Date(session.timerDeadline).toISOString() : undefined,
+        response: client.role === "participant" ? session.responses?.[client.participantId] : undefined,
       };
     case "closed":
-      if (session.activeQuestion.kind === "open-ended" && role === "organizer") {
+      if (session.activeQuestion.kind === "open-ended" && client.role === "organizer") {
         return {
           type: "closed-open-ended-question",
           question: session.activeQuestion,
@@ -227,7 +229,7 @@ function sessionMessage(session: SessionRecord, role: ConnectedClient["role"]): 
 function broadcast(session: SessionRecord): void {
   for (const client of clientsBySession.get(session.code) ?? []) {
     if (client.socket.readyState === WebSocket.OPEN) {
-      client.socket.send(JSON.stringify(sessionMessage(session, client.role)));
+      client.socket.send(JSON.stringify(sessionMessage(session, client)));
       if (client.role === "organizer" && session.questions) {
         client.socket.send(JSON.stringify({
           type: "organizer-question-queue",
@@ -643,7 +645,7 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
     return;
   }
 
-  let role: ConnectedClient["role"] = "participant";
+  let role: ConnectionRole = "participant";
   let principal: OrganizerPrincipal | undefined;
   const token = url.searchParams.get("token");
   if (token) {
@@ -704,6 +706,7 @@ function admitClient(
   clientsBySession.set(session.code, clients);
   scheduleExpiration(session);
   scheduleQuestionTimer(session);
+  socket.send(JSON.stringify({ type: "connected", role }));
   broadcast(session);
 
   socket.on("message", (message) => {

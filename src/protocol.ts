@@ -114,6 +114,14 @@ export interface ActiveQuestionSnapshot {
   type: "active-question";
   question: Question;
   timerDeadline?: string;
+  response?: string;
+}
+
+export type ConnectionRole = "organizer" | "participant";
+
+export interface ConnectedMessage {
+  type: "connected";
+  role: ConnectionRole;
 }
 
 export interface OrganizerQuestionQueueSnapshot {
@@ -156,6 +164,7 @@ export interface AnswerAcceptedMessage {
 export type LobbyMessage =
   | LobbySnapshot
   | ActiveQuestionSnapshot
+  | ConnectedMessage
   | OrganizerQuestionQueueSnapshot
   | ClosedQuestionSnapshot
   | ClosedOpenEndedQuestionSnapshot

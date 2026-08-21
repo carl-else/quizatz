@@ -51,6 +51,7 @@ const timerSeconds = ref("");
 const authoredQuestions = ref<SessionQuestion[]>([]);
 const activeQuestionIndex = ref<number>();
 const homeUrl = import.meta.env.BASE_URL;
+const AUTHENTICATED_RECOVERY_SESSION_KEY = "quizatz:authenticated-recovery-session";
 let socket: LobbyConnection | undefined;
 let startAfterAuthoring = false;
 
@@ -76,6 +77,15 @@ const shareUrl = computed(() => {
 
 function setCode(event: Event) {
   sessionCode.value = normalizeSessionCode((event.target as HTMLInputElement).value);
+}
+
+function authenticatedRecoveryCode(): string | undefined {
+  const code = normalizeSessionCode(sessionStorage.getItem(AUTHENTICATED_RECOVERY_SESSION_KEY) ?? "");
+  return isSessionCode(code) ? code : undefined;
+}
+
+function clearAuthenticatedRecovery() {
+  sessionStorage.removeItem(AUTHENTICATED_RECOVERY_SESSION_KEY);
 }
 
 function useSocket(accessToken?: string) {
@@ -117,6 +127,17 @@ function useSocket(accessToken?: string) {
         activeQuestion.value = nextSnapshot.question;
         questionState.value = "active";
         questionResult.value = undefined;
+        if (nextSnapshot.response !== undefined) {
+          if (nextSnapshot.question.kind === "single-choice") {
+            selectedOptionId.value = nextSnapshot.response;
+            const option = nextSnapshot.question.options.find((candidate) => candidate.id === nextSnapshot.response);
+            answerStatus.value = option ? `Answer saved: ${option.text}.` : "Answer saved.";
+          } else {
+            openEndedAnswer.value = nextSnapshot.response;
+            hasSubmittedOpenEndedAnswer.value = true;
+            answerStatus.value = "Answer saved.";
+          }
+        }
       } else if (nextSnapshot.type === "closed-question") {
         snapshot.value = undefined;
         activeQuestion.value = nextSnapshot.question;
@@ -134,6 +155,10 @@ function useSocket(accessToken?: string) {
         questionResult.value = nextSnapshot.result;
       }
       error.value = "";
+    },
+    (role) => {
+      view.value = role;
+      if (accessToken) sessionStorage.setItem(AUTHENTICATED_RECOVERY_SESSION_KEY, sessionCode.value);
     },
     (message) => {
       error.value = message;
@@ -258,7 +283,7 @@ async function createSession() {
       password: password.value || undefined,
     });
     sessionCode.value = created.code;
-    view.value = "organizer";
+    view.value = "participant";
     useSocket(identity.accessToken);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "Could not create the live session.";
@@ -273,6 +298,7 @@ function joinSession() {
     error.value = "Enter a six-character session code.";
     return;
   }
+  clearAuthenticatedRecovery();
   view.value = "participant";
   useSocket();
 }
@@ -286,6 +312,7 @@ async function joinNamedSession() {
   error.value = "";
   try {
     const identity = await signInOrganizer();
+    organizerName.value = identity.displayName;
     view.value = "participant";
     useSocket(identity.accessToken);
   } catch (caught) {
@@ -310,9 +337,27 @@ function leaveLobby() {
   authoredQuestions.value = [];
   activeQuestionIndex.value = undefined;
   startAfterAuthoring = false;
+  clearAuthenticatedRecovery();
   organizerToken.value = "";
   error.value = "";
   view.value = "home";
+}
+
+async function recoverAuthenticatedSession(code: string) {
+  sessionCode.value = code;
+  view.value = "participant";
+  busy.value = true;
+  error.value = "";
+  try {
+    const identity = await signInOrganizer();
+    organizerName.value = identity.displayName;
+    useSocket(identity.accessToken);
+  } catch (caught) {
+    view.value = "home";
+    error.value = caught instanceof Error ? caught.message : "Could not restore the live session.";
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function copyShareUrl() {
@@ -323,9 +368,13 @@ async function copyShareUrl() {
 
 onMounted(() => {
   const linkedCode = normalizeSessionCode(new URL(window.location.href).searchParams.get("session") ?? "");
+  const recoveryCode = authenticatedRecoveryCode();
   if (isSessionCode(linkedCode)) {
     sessionCode.value = linkedCode;
-    joinSession();
+    if (linkedCode === recoveryCode) void recoverAuthenticatedSession(linkedCode);
+    else joinSession();
+  } else if (recoveryCode) {
+    void recoverAuthenticatedSession(recoveryCode);
   }
 });
 

@@ -3,6 +3,7 @@ import {
   normalizeSessionCode,
   type AnswerAcceptedMessage,
   type ApiError,
+  type ConnectionRole,
   type CreateSessionOptions,
   type EditNextQuestionCommand,
   type LobbyMessage,
@@ -86,6 +87,7 @@ export function connectToLobby(
   accessToken: string | undefined,
   password: string | undefined,
   onSnapshot: (snapshot: LobbyMessage) => void,
+  onConnected: (role: ConnectionRole) => void,
   onFailure: (message: string) => void,
   onPasswordRequired: () => void,
   onNamedParticipationRequired: () => void,
@@ -107,6 +109,10 @@ export function connectToLobby(
     });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data)) as LobbyMessage;
+      if (message.type === "connected") {
+        onConnected(message.role);
+        return;
+      }
       if (message.type === "expired") {
         stopped = true;
         onFailure("This live session has expired.");

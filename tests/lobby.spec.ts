@@ -539,6 +539,110 @@ test("a reconnecting participant revises their active answer without adding anot
   await organizerContext.close();
 });
 
+test("a named participant restores their active response after backend replacement and refresh", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "named");
+
+  const participantContext = await browser.newContext();
+  await participantContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-named-participant");
+  });
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await participant.getByRole("button", { name: "Sign in to join" }).click();
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+  await participant.getByRole("radio", { name: "Quizatz" }).check();
+  await expect(participant.getByText("Answer saved: Quizatz.")).toBeVisible();
+
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  await participant.reload();
+
+  await expect(participant.getByRole("radio", { name: "Quizatz" })).toBeChecked();
+  await expect(participant.getByText("Answer saved: Quizatz.")).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("an organizer restores control after backend replacement and refresh", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+  await expect(organizer.getByRole("button", { name: "Close question" })).toBeVisible();
+
+  await organizer.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  await organizer.reload();
+
+  await expect(organizer.getByRole("button", { name: "Close question" })).toBeVisible();
+
+  await organizerContext.close();
+});
+
+test("a named participant cannot gain organizer control through browser state", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "named");
+
+  const participantContext = await browser.newContext();
+  await participantContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-named-participant");
+  });
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+  await participant.getByRole("button", { name: "Sign in to join" }).click();
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which tool will we use?");
+  await organizer.getByLabel("Option 1").fill("Quizatz");
+  await organizer.getByLabel("Option 2").fill("A whiteboard");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+  await expect(participant.getByRole("radio", { name: "Quizatz" })).toBeVisible();
+
+  await participant.evaluate((sessionCode) => {
+    sessionStorage.setItem("quizatz:authenticated-recovery-session", sessionCode);
+    sessionStorage.setItem("quizatz:authenticated-recovery-role", "organizer");
+    sessionStorage.setItem("quizatz:organizer-name", "Test organizer");
+  }, code);
+  await participant.reload();
+
+  await expect(participant.getByRole("radio", { name: "Quizatz" })).toBeVisible();
+  await expect(participant.getByRole("button", { name: "Close question" })).toHaveCount(0);
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
 test("a nonexistent session code has a clear error state", async ({ page }) => {
   await page.goto("/?session=000000");
   await expect(page.getByRole("alert")).toHaveText("That live session was not found or has expired.");
