@@ -78,6 +78,11 @@ const shareUrl = computed(() => {
   url.searchParams.set("session", sessionCode.value);
   return url.toString();
 });
+const qrJoinDisplayUrl = computed(() => {
+  const url = new URL("join-display.html", window.location.href);
+  url.searchParams.set("session", sessionCode.value);
+  return url.toString();
+});
 
 function setCode(event: Event) {
   sessionCode.value = normalizeSessionCode((event.target as HTMLInputElement).value);
@@ -578,6 +583,7 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
               <Copy v-else :size="19" aria-hidden="true" />
             </button>
           </div>
+          <a class="qr-display-link" :href="qrJoinDisplayUrl" target="_blank" rel="noopener">Open QR join display</a>
         </div>
       </section>
 

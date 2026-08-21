@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue()],
     build: {
       rollupOptions: {
-        input: ["index.html", "auth-callback.html"],
+        input: ["index.html", "auth-callback.html", "join-display.html"],
       },
     },
   };

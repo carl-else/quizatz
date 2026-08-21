@@ -239,6 +239,16 @@ async function activeSession(code: string): Promise<SessionRecord | undefined> {
   return session;
 }
 
+async function publicDisplayStatus(code: string | undefined): Promise<{
+  status: "waiting" | "in-progress" | "ended" | "unavailable";
+}> {
+  if (!code) return { status: "unavailable" };
+  const session = await activeSession(code);
+  if (!session || session.expiredAt || session.expiresAt <= sessionNow(code)) return { status: "unavailable" };
+  if (session.endedAt) return { status: "ended" };
+  return { status: session.activeQuestion ? "in-progress" : "waiting" };
+}
+
 function clearCleanupTimer(code: string): void {
   const timer = cleanupTimers.get(code);
   if (timer) clearTimeout(timer);
@@ -767,7 +777,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     response.writeHead(204, {
       ...corsHeaders(request),
       "Access-Control-Allow-Headers": "Authorization, Content-Type",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     });
     response.end();
     return;
@@ -858,6 +868,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
     sendJson(response, 200, operationalMetricSummary(code), request);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/sessions/")
+    && url.pathname.endsWith("/display-status")) {
+    sendJson(response, 200, await publicDisplayStatus(sessionCodeFrom(url.pathname, "/display-status")), request);
     return;
   }
 
