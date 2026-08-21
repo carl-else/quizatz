@@ -6,10 +6,12 @@ import { authenticateToken, samePrincipal } from "./auth.js";
 import {
   TableSessionRepository,
   type OrganizerPrincipal,
+  type SessionRepository,
   type SessionRecord,
 } from "./session-repository.js";
 import {
   isSessionCode,
+  LIVE_SESSION_AT_CAPACITY_CLOSE_CODE,
   normalizeSessionCode,
   SESSION_LEASE_MS,
   type CreateSessionOptions,
@@ -34,7 +36,19 @@ interface ConnectedClient {
   participantId: string;
 }
 
+interface OperationalMetrics {
+  broadcasts: number;
+  broadcastLatenciesMs: number[];
+  connectionLatenciesMs: number[];
+  disconnects: number;
+  knownParticipantIds: Set<string>;
+  reconnects: number;
+  resourceUtilization: Array<{ rssBytes: number; systemCpuMicros: number; userCpuMicros: number }>;
+  tableStorageLatenciesMs: number[];
+}
+
 const port = Number(process.env.PORT ?? 3000);
+const MAX_PARTICIPANTS = 50;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 30;
 const MAX_QUESTION_QUEUE_BYTES = 60 * 1024;
@@ -43,10 +57,6 @@ if (!process.env.E2E_AUTH_TOKEN) {
     if (!process.env[name]) throw new Error(`${name} is required.`);
   }
 }
-const repository = TableSessionRepository.fromEnvironment();
-await repository.initialize();
-await repository.get("HEALTH");
-
 const clientsBySession = new Map<string, Set<ConnectedClient>>();
 const cachedSessions = new Map<string, SessionRecord>();
 const expirationTimers = new Map<string, NodeJS.Timeout>();
@@ -57,6 +67,79 @@ const e2eTimes = new Map<string, number>();
 const e2eCleanupFailures = new Map<string, number>();
 const webSockets = new WebSocketServer({ noServer: true });
 const CLEANUP_RETRY_MS = 60_000;
+const MAX_OPERATIONAL_SAMPLES = 100;
+const operationalMetricsBySession = new Map<string, OperationalMetrics>();
+
+function metricsFor(code: string): OperationalMetrics {
+  let metrics = operationalMetricsBySession.get(code);
+  if (!metrics) {
+    metrics = {
+      broadcasts: 0,
+      broadcastLatenciesMs: [],
+      connectionLatenciesMs: [],
+      disconnects: 0,
+      knownParticipantIds: new Set(),
+      reconnects: 0,
+      resourceUtilization: [],
+      tableStorageLatenciesMs: [],
+    };
+    operationalMetricsBySession.set(code, metrics);
+  }
+  return metrics;
+}
+
+function addOperationalSample(samples: number[], value: number): void {
+  if (samples.length === MAX_OPERATIONAL_SAMPLES) samples.shift();
+  samples.push(Math.round(value));
+}
+
+function recordResourceUtilization(code: string): void {
+  const metrics = metricsFor(code);
+  if (metrics.resourceUtilization.length === MAX_OPERATIONAL_SAMPLES) metrics.resourceUtilization.shift();
+  const resources = process.resourceUsage();
+  metrics.resourceUtilization.push({
+    rssBytes: process.memoryUsage.rss(),
+    systemCpuMicros: resources.systemCPUTime,
+    userCpuMicros: resources.userCPUTime,
+  });
+}
+
+async function measureTableStorage<T>(code: string | undefined, operation: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await operation();
+  } finally {
+    if (code) addOperationalSample(metricsFor(code).tableStorageLatenciesMs, performance.now() - startedAt);
+  }
+}
+
+function measuredRepository(sessionRepository: SessionRepository): SessionRepository {
+  return {
+    create: (session) => measureTableStorage(session.code, () => sessionRepository.create(session)),
+    get: (code) => measureTableStorage(code, () => sessionRepository.get(code)),
+    list: () => sessionRepository.list(),
+    update: (session) => measureTableStorage(session.code, () => sessionRepository.update(session)),
+    delete: (session) => measureTableStorage(session.code, () => sessionRepository.delete(session)),
+  };
+}
+
+function operationalMetricSummary(code: string) {
+  const metrics = metricsFor(code);
+  return {
+    broadcasts: metrics.broadcasts,
+    broadcastLatenciesMs: metrics.broadcastLatenciesMs,
+    connectionLatenciesMs: metrics.connectionLatenciesMs,
+    disconnects: metrics.disconnects,
+    reconnects: metrics.reconnects,
+    resourceUtilization: metrics.resourceUtilization,
+    tableStorageLatenciesMs: metrics.tableStorageLatenciesMs,
+  };
+}
+
+const tableRepository = TableSessionRepository.fromEnvironment();
+await tableRepository.initialize();
+await tableRepository.get("HEALTH");
+const repository = measuredRepository(tableRepository);
 
 function configuredOrigins(): string[] {
   return (process.env.ALLOWED_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:4174")
@@ -308,6 +391,7 @@ function sessionMessage(session: SessionRecord, client: ConnectedClient): LobbyM
 }
 
 function broadcast(session: SessionRecord): void {
+  const startedAt = performance.now();
   for (const client of clientsBySession.get(session.code) ?? []) {
     if (client.socket.readyState === WebSocket.OPEN) {
       client.socket.send(JSON.stringify(sessionMessage(session, client)));
@@ -320,6 +404,10 @@ function broadcast(session: SessionRecord): void {
       }
     }
   }
+  const metrics = metricsFor(session.code);
+  metrics.broadcasts += 1;
+  addOperationalSample(metrics.broadcastLatenciesMs, performance.now() - startedAt);
+  recordResourceUtilization(session.code);
 }
 
 interface ParsedQuestion {
@@ -759,6 +847,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     sendJson(response, 200, { connectionCount }, request);
     return;
   }
+  if (request.method === "GET" && url.pathname === "/api/e2e/operational-metrics" && process.env.E2E_AUTH_TOKEN) {
+    if (!e2eAuthorized(request)) {
+      sendJson(response, 401, { error: "E2E authentication required" }, request);
+      return;
+    }
+    const code = normalizeSessionCode(url.searchParams.get("session") ?? "");
+    if (!isSessionCode(code)) {
+      sendJson(response, 400, { error: "A live session code is required." }, request);
+      return;
+    }
+    sendJson(response, 200, operationalMetricSummary(code), request);
+    return;
+  }
 
   const code = sessionCodeFrom(url.pathname);
   if (request.method === "POST" && code) {
@@ -778,6 +879,7 @@ function acceptClient(request: IncomingMessage, socket: Duplex, head: Buffer): v
 }
 
 async function connectClient(request: IncomingMessage, socket: WebSocket): Promise<void> {
+  const connectedAt = performance.now();
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   const code = sessionCodeFrom(url.pathname, "/ws");
   if (!code) {
@@ -832,13 +934,13 @@ async function connectClient(request: IncomingMessage, socket: WebSocket): Promi
         socket.close(4405, "Password was not accepted");
         return;
       }
-      admitClient(session, socket, role, principal, url.searchParams.get("participant"));
+      admitClient(session, socket, role, principal, url.searchParams.get("participant"), connectedAt);
     });
     socket.send(JSON.stringify({ type: "join-required" }));
     return;
   }
 
-  admitClient(session, socket, role, principal, url.searchParams.get("participant"));
+  admitClient(session, socket, role, principal, url.searchParams.get("participant"), connectedAt);
 }
 
 function admitClient(
@@ -847,16 +949,27 @@ function admitClient(
   role: ConnectedClient["role"],
   principal: OrganizerPrincipal | undefined,
   anonymousParticipantId: string | null,
+  connectedAt: number,
 ): void {
+  const clients = clientsBySession.get(session.code) ?? new Set<ConnectedClient>();
+  const participantCount = [...clients].filter((client) => client.role === "participant").length;
+  if (role === "participant" && participantCount >= MAX_PARTICIPANTS) {
+    socket.close(LIVE_SESSION_AT_CAPACITY_CLOSE_CODE, "Live session is at capacity");
+    return;
+  }
   const participantId = principal
     ? `${principal.tid}:${principal.oid}`
     : anonymousParticipantId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(anonymousParticipantId)
       ? anonymousParticipantId
       : crypto.randomUUID();
   const client: ConnectedClient = { socket, role, participantId };
-  const clients = clientsBySession.get(session.code) ?? new Set<ConnectedClient>();
   clients.add(client);
   clientsBySession.set(session.code, clients);
+  const metrics = metricsFor(session.code);
+  if (metrics.knownParticipantIds.has(participantId)) metrics.reconnects += 1;
+  else metrics.knownParticipantIds.add(participantId);
+  addOperationalSample(metrics.connectionLatenciesMs, performance.now() - connectedAt);
+  recordResourceUtilization(session.code);
   scheduleExpiration(session);
   scheduleQuestionTimer(session);
   socket.send(JSON.stringify({ type: "connected", role }));
@@ -871,6 +984,8 @@ function admitClient(
 
   socket.on("close", () => {
     clients.delete(client);
+    metricsFor(session.code).disconnects += 1;
+    recordResourceUtilization(session.code);
     if (clients.size === 0) clientsBySession.delete(session.code);
     else broadcast(session);
   });

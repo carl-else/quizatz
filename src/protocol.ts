@@ -1,5 +1,6 @@
 export const SESSION_CODE_LENGTH = 6;
 export const SESSION_LEASE_MS = 24 * 60 * 60 * 1000;
+export const LIVE_SESSION_AT_CAPACITY_CLOSE_CODE = 4413;
 
 export type SessionAccessPolicy = "anonymous" | "named";
 

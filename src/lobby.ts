@@ -1,5 +1,6 @@
 import {
   isSessionCode,
+  LIVE_SESSION_AT_CAPACITY_CLOSE_CODE,
   normalizeSessionCode,
   type AnswerAcceptedMessage,
   type ApiError,
@@ -162,6 +163,7 @@ export function connectToLobby(
         4404: "That live session was not found or has expired.",
         4405: "The password is incorrect.",
         4406: "This live session only allows anonymous participation.",
+        [LIVE_SESSION_AT_CAPACITY_CLOSE_CODE]: "This live session has reached its 50-participant limit.",
       };
       const terminalMessage = messages[event.code];
       if (terminalMessage) {

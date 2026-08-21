@@ -27,6 +27,9 @@ param entraApiScope string = 'access_as_user'
 @description('Comma-separated browser origins allowed to call the backend.')
 param allowedOrigins string
 
+@description('UTC start date for recurring monthly Cost Management budgets.')
+param budgetStartDate string = utcNow('yyyy-MM-01T00:00:00Z')
+
 var tableName = 'LiveSessions'
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -132,6 +135,56 @@ resource tableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
       'Microsoft.Authorization/roleDefinitions',
       '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
     )
+  }
+}
+
+resource costWarningBudget 'Microsoft.Consumption/budgets@2024-08-01' = {
+  name: 'quizatz-monthly-cost-warning'
+  properties: {
+    amount: 10
+    category: 'Cost'
+    timeGrain: 'Monthly'
+    timePeriod: {
+      startDate: budgetStartDate
+    }
+    notifications: {
+      actualCostReached: {
+        contactEmails: []
+        contactRoles: [
+          'Owner'
+        ]
+        enabled: true
+        locale: 'en-us'
+        operator: 'GreaterThanOrEqualTo'
+        threshold: 100
+        thresholdType: 'Actual'
+      }
+    }
+  }
+}
+
+resource costLimitBudget 'Microsoft.Consumption/budgets@2024-08-01' = {
+  name: 'quizatz-monthly-cost-limit'
+  properties: {
+    amount: 15
+    category: 'Cost'
+    timeGrain: 'Monthly'
+    timePeriod: {
+      startDate: budgetStartDate
+    }
+    notifications: {
+      actualCostReached: {
+        contactEmails: []
+        contactRoles: [
+          'Owner'
+        ]
+        enabled: true
+        locale: 'en-us'
+        operator: 'GreaterThanOrEqualTo'
+        threshold: 100
+        thresholdType: 'Actual'
+      }
+    }
   }
 }
 

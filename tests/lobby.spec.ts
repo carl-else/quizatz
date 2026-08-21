@@ -53,6 +53,161 @@ test("an organizer creates a live session and an anonymous participant joins", a
   await organizerContext.close();
 });
 
+test("a live session supports 50 participants and reports when it is at capacity", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  const participantContexts = await Promise.all(
+    Array.from({ length: 50 }, () => browser.newContext()),
+  );
+  let capacityContext: import("@playwright/test").BrowserContext | undefined;
+
+  try {
+    await organizer.goto("/");
+    const code = await createSession(organizer, "anonymous");
+    const joinStartedAt = performance.now();
+    const participants = await Promise.all(participantContexts.map(async (context) => {
+      const participant = await context.newPage();
+      await participant.goto(`/?session=${code}`);
+      await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
+      return participant;
+    }));
+    const joinLatencyMs = performance.now() - joinStartedAt;
+
+    await expect(organizer.getByTestId("participant-count")).toHaveText("50");
+    capacityContext = await browser.newContext();
+    const capacityParticipant = await capacityContext.newPage();
+    await capacityParticipant.goto(`/?session=${code}`);
+    await expect(capacityParticipant.getByRole("alert")).toHaveText(
+      "This live session has reached its 50-participant limit.",
+    );
+    await expect(organizer.getByTestId("participant-count")).toHaveText("50");
+
+    await organizer.getByRole("textbox", { name: "Question" }).fill("Which capacity result reached everyone?");
+    await organizer.getByLabel("Option 1").fill("All fifty");
+    await organizer.getByLabel("Option 2").fill("Only some");
+    const broadcastStartedAt = performance.now();
+    await organizer.getByRole("button", { name: "Start question" }).click();
+    await Promise.all(participants.map((participant) => expect(
+      participant.getByRole("radio", { name: "All fifty" }),
+    ).toBeVisible()));
+    const broadcastLatencyMs = performance.now() - broadcastStartedAt;
+
+    await organizer.evaluate(async (sessionCode) => {
+      await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer playwright-only" },
+      });
+    }, code);
+    await expect.poll(async () => organizer.evaluate(async (sessionCode) => {
+      const response = await fetch(
+        `http://127.0.0.1:3000/api/e2e/operational-metrics?session=${sessionCode}`,
+        { headers: { Authorization: "Bearer playwright-only" } },
+      );
+      return response.json() as Promise<{
+        broadcasts: number;
+        broadcastLatenciesMs: number[];
+        connectionLatenciesMs: number[];
+        disconnects: number;
+        reconnects: number;
+        resourceUtilization: { rssBytes: number; userCpuMicros: number; systemCpuMicros: number }[];
+        tableStorageLatenciesMs: number[];
+      }>;
+    })).toMatchObject({
+      broadcasts: expect.any(Number),
+      broadcastLatenciesMs: expect.any(Array),
+      connectionLatenciesMs: expect.any(Array),
+      disconnects: expect.any(Number),
+      reconnects: expect.any(Number),
+      resourceUtilization: expect.any(Array),
+      tableStorageLatenciesMs: expect.any(Array),
+    });
+    await expect.poll(async () => organizer.evaluate(async (sessionCode) => {
+      const response = await fetch(
+        `http://127.0.0.1:3000/api/e2e/operational-metrics?session=${sessionCode}`,
+        { headers: { Authorization: "Bearer playwright-only" } },
+      );
+      const metrics = await response.json() as { disconnects: number; reconnects: number };
+      return metrics.disconnects >= 51 && metrics.reconnects >= 51;
+    }, code), { timeout: 15_000 }).toBe(true);
+    const capacityMetrics = await organizer.evaluate(async (sessionCode) => {
+      const response = await fetch(
+        `http://127.0.0.1:3000/api/e2e/operational-metrics?session=${sessionCode}`,
+        { headers: { Authorization: "Bearer playwright-only" } },
+      );
+      return response.json() as Promise<{
+        broadcasts: number;
+        broadcastLatenciesMs: number[];
+        connectionLatenciesMs: number[];
+        disconnects: number;
+        reconnects: number;
+        resourceUtilization: { rssBytes: number; userCpuMicros: number; systemCpuMicros: number }[];
+        tableStorageLatenciesMs: number[];
+      }>;
+    }, code);
+      expect(capacityMetrics.broadcastLatenciesMs).not.toHaveLength(0);
+    expect(capacityMetrics.broadcasts).toBeGreaterThan(0);
+    expect(capacityMetrics.connectionLatenciesMs).not.toHaveLength(0);
+    expect(capacityMetrics.disconnects).toBeGreaterThanOrEqual(51);
+    expect(capacityMetrics.reconnects).toBeGreaterThanOrEqual(51);
+    expect(capacityMetrics.resourceUtilization).not.toHaveLength(0);
+    expect(capacityMetrics.tableStorageLatenciesMs).not.toHaveLength(0);
+
+    await test.info().attach("capacity-metrics.json", {
+      body: JSON.stringify({ joinLatencyMs, broadcastLatencyMs, participantCount: 50, capacityMetrics }),
+      contentType: "application/json",
+    });
+  } finally {
+    await capacityContext?.close();
+    await Promise.all(participantContexts.map((context) => context.close()));
+    await organizerContext.close();
+  }
+});
+
+test("a mobile participant can answer by keyboard and read result cues without color", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  const participantContext = await browser.newContext({
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+  });
+
+  try {
+    await organizer.goto("/");
+    const code = await createSession(organizer, "anonymous");
+    const participant = await participantContext.newPage();
+    await participant.goto(`/?session=${code}`);
+    await expect(participant.getByRole("heading", { name: "You’re in." })).toBeVisible();
+    expect(await participant.locator("body").evaluate((body) => body.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await organizer.getByRole("textbox", { name: "Question" }).fill("Which accessible cue identifies the result?");
+    await organizer.getByLabel("Option 1").fill("Text and count");
+    await organizer.getByLabel("Option 2").fill("Color alone");
+    await organizer.getByRole("button", { name: "Start question" }).click();
+    const firstOption = participant.getByRole("radio", { name: "Text and count" });
+    await firstOption.focus();
+    await participant.keyboard.press("Space");
+    await expect(participant.getByRole("status")).toHaveText("Answer saved: Text and count.");
+
+    await organizer.getByRole("button", { name: "Close question" }).click();
+    await organizer.getByRole("button", { name: "Reveal result" }).click();
+    await expect(participant.getByRole("progressbar", {
+      name: "Text and count: 1 response (100%)",
+    })).toBeVisible();
+    await expect(participant.getByText("1 response total")).toBeVisible();
+  } finally {
+    await participantContext.close();
+    await organizerContext.close();
+  }
+});
+
 test("ending a live session preserves its final summary only for current participants", async ({ browser }) => {
   const organizerContext = await browser.newContext();
   await organizerContext.addInitScript(() => {
