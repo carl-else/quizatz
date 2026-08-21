@@ -12,6 +12,10 @@ _Avoid_: Quiz, poll, room
 The pre-start state of a live session, in which participants may join and wait while the organizer sees their count.
 _Avoid_: Waiting room
 
+**QR join display**:
+A public, projection-oriented page opened by an organizer from the lobby. It presents a QR code and text link for joining a live session, and may show only its privacy-safe lifecycle availability.
+_Avoid_: QR invitation, barcode page
+
 **Active question**:
 The single question currently presented in a started live session. Late-joining participants may respond only to the active question.
 _Avoid_: Current slide
