@@ -9,22 +9,50 @@ export interface SingleChoiceOption {
 }
 
 export interface SingleChoiceQuestion {
+  kind: "single-choice";
   id: string;
   text: string;
   options: SingleChoiceOption[];
 }
 
-export interface StartQuestionCommand {
-  type: "start-question";
-  question: {
-    text: string;
-    options: string[];
-  };
+export interface OpenEndedQuestion {
+  kind: "open-ended";
+  id: string;
+  text: string;
 }
 
-export interface AnswerQuestionCommand {
+export type Question = SingleChoiceQuestion | OpenEndedQuestion;
+
+export interface StartSingleChoiceQuestion {
+  kind: "single-choice";
+  text: string;
+  options: string[];
+}
+
+export interface StartOpenEndedQuestion {
+  kind: "open-ended";
+  text: string;
+}
+
+export interface StartQuestionCommand {
+  type: "start-question";
+  question: StartSingleChoiceQuestion | StartOpenEndedQuestion;
+}
+
+export interface AnswerSingleChoiceQuestionCommand {
   type: "answer-question";
   optionId: string;
+}
+
+export interface AnswerOpenEndedQuestionCommand {
+  type: "answer-question";
+  text: string;
+}
+
+export interface MergeOpenEndedResultCommand {
+  type: "merge-open-ended-result";
+  sourceText: string;
+  targetText: string;
 }
 
 export interface CloseQuestionCommand {
@@ -42,6 +70,16 @@ export interface SingleChoiceResult {
   totalResponseCount: number;
 }
 
+export interface OpenEndedResultEntry {
+  text: string;
+  responseCount: number;
+}
+
+export interface OpenEndedResult {
+  entries: OpenEndedResultEntry[];
+  totalResponseCount: number;
+}
+
 export interface LobbySnapshot {
   type: "lobby";
   sessionCode: string;
@@ -51,29 +89,45 @@ export interface LobbySnapshot {
 
 export interface ActiveQuestionSnapshot {
   type: "active-question";
-  question: SingleChoiceQuestion;
+  question: Question;
 }
 
 export interface ClosedQuestionSnapshot {
   type: "closed-question";
-  question: SingleChoiceQuestion;
+  question: Question;
 }
 
-export interface RevealedQuestionSnapshot {
+export interface ClosedOpenEndedQuestionSnapshot {
+  type: "closed-open-ended-question";
+  question: OpenEndedQuestion;
+  result: OpenEndedResult;
+}
+
+export interface RevealedSingleChoiceQuestionSnapshot {
   type: "revealed-question";
   question: SingleChoiceQuestion;
   result: SingleChoiceResult;
 }
 
+export interface RevealedOpenEndedQuestionSnapshot {
+  type: "revealed-question";
+  question: OpenEndedQuestion;
+  result: OpenEndedResult;
+}
+
+export type RevealedQuestionSnapshot = RevealedSingleChoiceQuestionSnapshot | RevealedOpenEndedQuestionSnapshot;
+
 export interface AnswerAcceptedMessage {
   type: "answer-accepted";
-  optionId: string;
+  optionId?: string;
+  text?: string;
 }
 
 export type LobbyMessage =
   | LobbySnapshot
   | ActiveQuestionSnapshot
   | ClosedQuestionSnapshot
+  | ClosedOpenEndedQuestionSnapshot
   | RevealedQuestionSnapshot
   | AnswerAcceptedMessage
   | { type: "expired" }

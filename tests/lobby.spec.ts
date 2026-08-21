@@ -252,6 +252,49 @@ test("participants revise answers before the organizer closes and reveals a sing
   await organizerContext.close();
 });
 
+test("an organizer consolidates and reveals an open-ended result", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const firstParticipantContext = await browser.newContext();
+  const firstParticipant = await firstParticipantContext.newPage();
+  await firstParticipant.goto(`/?session=${code}`);
+  const secondParticipantContext = await browser.newContext();
+  const secondParticipant = await secondParticipantContext.newPage();
+  await secondParticipant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("button", { name: "Open-ended" }).click();
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Which city should host the offsite?");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+
+  await firstParticipant.getByRole("textbox", { name: "Your answer" }).fill("Gothenburg");
+  await firstParticipant.getByRole("button", { name: "Submit answer" }).click();
+  await firstParticipant.getByRole("textbox", { name: "Your answer" }).fill("Goteborg");
+  await firstParticipant.getByRole("button", { name: "Update answer" }).click();
+  await secondParticipant.getByRole("textbox", { name: "Your answer" }).fill("Göteborg");
+  await secondParticipant.getByRole("button", { name: "Submit answer" }).click();
+
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await expect(organizer.getByRole("list", { name: "Open-ended results to consolidate" })).toContainText("Goteborg");
+  await expect(organizer.getByRole("list", { name: "Open-ended results to consolidate" })).toContainText("Göteborg");
+  await expect(firstParticipant.getByText("Responses are closed.")).toBeVisible();
+  await expect(firstParticipant.getByRole("list", { name: "Open-ended result" })).toHaveCount(0);
+
+  await organizer.getByRole("button", { name: "Merge Goteborg into Göteborg" }).click();
+  await expect(organizer.getByRole("list", { name: "Open-ended results to consolidate" })).toHaveText(/Göteborg.*2 responses/);
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await expect(firstParticipant.getByRole("list", { name: "Open-ended result" })).toHaveText(/Göteborg.*2 responses/);
+
+  await secondParticipantContext.close();
+  await firstParticipantContext.close();
+  await organizerContext.close();
+});
+
 test("a reconnecting participant revises their active answer without adding another response", async ({ browser }) => {
   const organizerContext = await browser.newContext();
   await organizerContext.addInitScript(() => {

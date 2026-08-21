@@ -1,6 +1,6 @@
 import { TableClient, type TableEntityResult } from "@azure/data-tables";
 import { DefaultAzureCredential } from "@azure/identity";
-import type { QuestionState, SessionAccessPolicy, SingleChoiceQuestion } from "../src/protocol.js";
+import type { Question, QuestionState, SessionAccessPolicy, SingleChoiceQuestion } from "../src/protocol.js";
 
 const PARTITION_KEY = "live-session";
 const DEFAULT_TABLE_NAME = "LiveSessions";
@@ -16,7 +16,7 @@ export interface SessionRecord {
   organizer: OrganizerPrincipal;
   accessPolicy: SessionAccessPolicy;
   passwordVerification?: string;
-  activeQuestion?: SingleChoiceQuestion;
+  activeQuestion?: Question;
   questionState?: QuestionState;
   responses?: Record<string, string>;
   createdAt: number;
@@ -37,6 +37,13 @@ interface SessionEntity {
   expiresAt: number;
 }
 
+type StoredQuestion = Question | Omit<SingleChoiceQuestion, "kind">;
+
+function parseQuestion(value: string): Question {
+  const question = JSON.parse(value) as StoredQuestion;
+  return "kind" in question ? question : { ...question, kind: "single-choice" };
+}
+
 export interface SessionRepository {
   create(session: SessionRecord): Promise<boolean>;
   get(code: string): Promise<SessionRecord | undefined>;
@@ -54,7 +61,7 @@ function toRecord(entity: TableEntityResult<SessionEntity>, code: string): Sessi
     },
     accessPolicy: entity.accessPolicy,
     passwordVerification: entity.passwordVerification,
-    activeQuestion: entity.activeQuestion ? JSON.parse(entity.activeQuestion) as SingleChoiceQuestion : undefined,
+    activeQuestion: entity.activeQuestion ? parseQuestion(entity.activeQuestion) : undefined,
     questionState: entity.questionState,
     responses: entity.responses ? JSON.parse(entity.responses) as Record<string, string> : undefined,
     createdAt: entity.createdAt,

@@ -15,6 +15,9 @@ import {
   type CreateSessionOptions,
   type LobbyMessage,
   type LobbySnapshot,
+  type OpenEndedResult,
+  type OpenEndedQuestion,
+  type Question,
   type QuestionState,
   type SessionCreated,
   type SingleChoiceResult,
@@ -135,9 +138,8 @@ function lobbySnapshot(session: SessionRecord): LobbySnapshot {
   };
 }
 
-function singleChoiceResult(session: SessionRecord): SingleChoiceResult {
-  const question = session.activeQuestion;
-  if (!question) return { options: [], totalResponseCount: 0 };
+function singleChoiceResult(session: SessionRecord, question: Question): SingleChoiceResult {
+  if (question.kind !== "single-choice") return { options: [], totalResponseCount: 0 };
   const responseCounts = new Map<string, number>();
   for (const optionId of Object.values(session.responses ?? {})) {
     responseCounts.set(optionId, (responseCounts.get(optionId) ?? 0) + 1);
@@ -156,7 +158,21 @@ function singleChoiceResult(session: SessionRecord): SingleChoiceResult {
   };
 }
 
-function sessionMessage(session: SessionRecord): LobbyMessage {
+function openEndedResult(session: SessionRecord): OpenEndedResult {
+  const responseCounts = new Map<string, number>();
+  for (const text of Object.values(session.responses ?? {})) {
+    responseCounts.set(text, (responseCounts.get(text) ?? 0) + 1);
+  }
+  const entries = [...responseCounts.entries()]
+    .map(([text, responseCount]) => ({ text, responseCount }))
+    .sort((first, second) => second.responseCount - first.responseCount || first.text.localeCompare(second.text));
+  return {
+    entries,
+    totalResponseCount: entries.reduce((total, entry) => total + entry.responseCount, 0),
+  };
+}
+
+function sessionMessage(session: SessionRecord, role: ConnectedClient["role"]): LobbyMessage {
   if (!session.activeQuestion || !session.questionState) return lobbySnapshot(session);
   switch (session.questionState) {
     case "upcoming":
@@ -164,20 +180,35 @@ function sessionMessage(session: SessionRecord): LobbyMessage {
     case "active":
       return { type: "active-question", question: session.activeQuestion };
     case "closed":
+      if (session.activeQuestion.kind === "open-ended" && role === "organizer") {
+        return {
+          type: "closed-open-ended-question",
+          question: session.activeQuestion,
+          result: openEndedResult(session),
+        };
+      }
       return { type: "closed-question", question: session.activeQuestion };
     case "revealed":
+      if (session.activeQuestion.kind === "open-ended") {
+        return {
+          type: "revealed-question",
+          question: session.activeQuestion,
+          result: openEndedResult(session),
+        };
+      }
       return {
         type: "revealed-question",
         question: session.activeQuestion,
-        result: singleChoiceResult(session),
+        result: singleChoiceResult(session, session.activeQuestion),
       };
   }
 }
 
 function broadcast(session: SessionRecord): void {
-  const message = JSON.stringify(sessionMessage(session));
   for (const client of clientsBySession.get(session.code) ?? []) {
-    if (client.socket.readyState === WebSocket.OPEN) client.socket.send(message);
+    if (client.socket.readyState === WebSocket.OPEN) {
+      client.socket.send(JSON.stringify(sessionMessage(session, client.role)));
+    }
   }
 }
 
@@ -185,15 +216,20 @@ function parseStartQuestion(message: unknown): StartQuestionCommand["question"] 
   if (typeof message !== "object" || message === null) return undefined;
   const { type, question } = message as Record<string, unknown>;
   if (type !== "start-question" || typeof question !== "object" || question === null) return undefined;
-  const { text, options } = question as Record<string, unknown>;
-  if (typeof text !== "string" || !Array.isArray(options)
-    || options.length < 2 || options.length > 8 || options.some((option) => typeof option !== "string")) {
+  const { kind, text, options } = question as Record<string, unknown>;
+  if (typeof text !== "string") {
     return undefined;
   }
   const normalizedText = text.trim();
+  if (!normalizedText) return undefined;
+  if (kind === "open-ended") return { kind, text: normalizedText };
+  if (kind !== "single-choice" || !Array.isArray(options)
+    || options.length < 2 || options.length > 8 || options.some((option) => typeof option !== "string")) {
+    return undefined;
+  }
   const normalizedOptions = options.map((option) => (option as string).trim());
-  return normalizedText && normalizedOptions.every(Boolean)
-    ? { text: normalizedText, options: normalizedOptions }
+  return normalizedOptions.every(Boolean)
+    ? { kind, text: normalizedText, options: normalizedOptions }
     : undefined;
 }
 
@@ -221,7 +257,7 @@ async function applyClientMessage(session: SessionRecord, client: ConnectedClien
     return;
   }
   const { type } = message as { type: unknown };
-  let acceptedAnswerOptionId: string | undefined;
+  let acceptedAnswer: { type: "answer-accepted"; optionId?: string; text?: string } | undefined;
 
   if (type === "start-question") {
     const question = parseStartQuestion(message);
@@ -229,22 +265,57 @@ async function applyClientMessage(session: SessionRecord, client: ConnectedClien
       client.socket.close(4400, "Invalid question");
       return;
     }
-    session.activeQuestion = {
-      id: crypto.randomUUID(),
-      text: question.text,
-      options: question.options.map((text) => ({ id: crypto.randomUUID(), text })),
-    } satisfies SingleChoiceQuestion;
+    session.activeQuestion = question.kind === "single-choice"
+      ? {
+          kind: "single-choice",
+          id: crypto.randomUUID(),
+          text: question.text,
+          options: question.options.map((text) => ({ id: crypto.randomUUID(), text })),
+        } satisfies SingleChoiceQuestion
+      : {
+          kind: "open-ended",
+          id: crypto.randomUUID(),
+          text: question.text,
+        } satisfies OpenEndedQuestion;
     session.questionState = "active";
     session.responses = {};
   } else if (type === "answer-question") {
-    const optionId = "optionId" in message ? (message as { optionId?: unknown }).optionId : undefined;
-    if (client.role !== "participant" || session.questionState !== "active" || !session.activeQuestion
-      || typeof optionId !== "string" || !session.activeQuestion.options.some((option) => option.id === optionId)) {
+    if (client.role !== "participant" || session.questionState !== "active" || !session.activeQuestion) {
       client.socket.close(4400, "Invalid answer");
       return;
     }
-    session.responses = { ...session.responses, [client.participantId]: optionId };
-    acceptedAnswerOptionId = optionId;
+    if (session.activeQuestion.kind === "single-choice") {
+      const optionId = "optionId" in message ? (message as { optionId?: unknown }).optionId : undefined;
+      if (typeof optionId !== "string" || !session.activeQuestion.options.some((option) => option.id === optionId)) {
+        client.socket.close(4400, "Invalid answer");
+        return;
+      }
+      session.responses = { ...session.responses, [client.participantId]: optionId };
+      acceptedAnswer = { type: "answer-accepted", optionId };
+    } else {
+      const text = "text" in message ? (message as { text?: unknown }).text : undefined;
+      const normalizedText = typeof text === "string" ? text.trim() : "";
+      if (!normalizedText || normalizedText.length > 500) {
+        client.socket.close(4400, "Invalid answer");
+        return;
+      }
+      session.responses = { ...session.responses, [client.participantId]: normalizedText };
+      acceptedAnswer = { type: "answer-accepted", text: normalizedText };
+    }
+  } else if (type === "merge-open-ended-result") {
+    const { sourceText, targetText } = message as { sourceText?: unknown; targetText?: unknown };
+    const responses = Object.values(session.responses ?? {});
+    if (client.role !== "organizer" || session.questionState !== "closed"
+      || session.activeQuestion?.kind !== "open-ended" || typeof sourceText !== "string"
+      || typeof targetText !== "string" || sourceText === targetText
+      || !responses.includes(sourceText) || !responses.includes(targetText)) {
+      client.socket.close(4400, "Invalid result merge");
+      return;
+    }
+    session.responses = Object.fromEntries(Object.entries(session.responses ?? {}).map(([participantId, text]) => [
+      participantId,
+      text === sourceText ? targetText : text,
+    ]));
   } else if (type === "close-question") {
     if (client.role !== "organizer" || session.questionState !== "active") {
       client.socket.close(4400, "Question cannot be closed");
@@ -267,8 +338,8 @@ async function applyClientMessage(session: SessionRecord, client: ConnectedClien
     return;
   }
   broadcast(session);
-  if (acceptedAnswerOptionId) {
-    client.socket.send(JSON.stringify({ type: "answer-accepted", optionId: acceptedAnswerOptionId }));
+  if (acceptedAnswer) {
+    client.socket.send(JSON.stringify(acceptedAnswer));
   }
 }
 

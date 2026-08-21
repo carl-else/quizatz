@@ -15,6 +15,8 @@ import {
   isSessionCode,
   normalizeSessionCode,
   type LobbySnapshot,
+  type OpenEndedResult,
+  type Question,
   type QuestionState,
   type SessionAccessPolicy,
   type SingleChoiceResult,
@@ -28,10 +30,12 @@ const sessionCode = ref("");
 const organizerName = ref("");
 const organizerToken = ref("");
 const snapshot = ref<LobbySnapshot>();
-const activeQuestion = ref<SingleChoiceQuestion>();
+const activeQuestion = ref<Question>();
 const questionState = ref<QuestionState>();
-const questionResult = ref<SingleChoiceResult>();
+const questionResult = ref<SingleChoiceResult | OpenEndedResult>();
 const selectedOptionId = ref("");
+const openEndedAnswer = ref("");
+const hasSubmittedOpenEndedAnswer = ref(false);
 const answerStatus = ref("");
 const busy = ref(false);
 const error = ref("");
@@ -39,11 +43,20 @@ const copied = ref(false);
 const accessPolicy = ref<SessionAccessPolicy>("anonymous");
 const password = ref("");
 const questionText = ref("");
+const questionKind = ref<"single-choice" | "open-ended">("single-choice");
 const questionOptions = ref(["", ""]);
 const homeUrl = import.meta.env.BASE_URL;
 let socket: LobbyConnection | undefined;
 
 const participantCount = computed(() => snapshot.value?.participantCount ?? 0);
+const singleChoiceResult = computed(() => {
+  const result = questionResult.value;
+  return result && "options" in result ? result : undefined;
+});
+const openEndedResult = computed(() => {
+  const result = questionResult.value;
+  return result && "entries" in result ? result : undefined;
+});
 const shareUrl = computed(() => {
   if (!sessionCode.value) return "";
   const url = new URL(window.location.href);
@@ -71,6 +84,8 @@ function useSocket(accessToken?: string) {
       } else if (nextSnapshot.type === "active-question") {
         if (activeQuestion.value?.id !== nextSnapshot.question.id) {
           selectedOptionId.value = "";
+          openEndedAnswer.value = "";
+          hasSubmittedOpenEndedAnswer.value = false;
           answerStatus.value = "";
         }
         snapshot.value = undefined;
@@ -82,6 +97,11 @@ function useSocket(accessToken?: string) {
         activeQuestion.value = nextSnapshot.question;
         questionState.value = "closed";
         questionResult.value = undefined;
+      } else if (nextSnapshot.type === "closed-open-ended-question") {
+        snapshot.value = undefined;
+        activeQuestion.value = nextSnapshot.question;
+        questionState.value = "closed";
+        questionResult.value = nextSnapshot.result;
       } else if (nextSnapshot.type === "revealed-question") {
         snapshot.value = undefined;
         activeQuestion.value = nextSnapshot.question;
@@ -101,21 +121,35 @@ function useSocket(accessToken?: string) {
       view.value = "home";
       error.value = "Sign in to join this live session.";
     },
-    (optionId) => {
-      const option = activeQuestion.value?.options.find((candidate) => candidate.id === optionId);
-      answerStatus.value = option ? `Answer saved: ${option.text}.` : "Answer saved.";
+    (answer) => {
+      if (answer.optionId && activeQuestion.value?.kind === "single-choice") {
+        const option = activeQuestion.value.options.find((candidate) => candidate.id === answer.optionId);
+        answerStatus.value = option ? `Answer saved: ${option.text}.` : "Answer saved.";
+      } else if (answer.text) {
+        hasSubmittedOpenEndedAnswer.value = true;
+        answerStatus.value = "Answer saved.";
+      }
     },
   );
 }
 
 function startQuestion() {
+  if (!questionText.value.trim()) {
+    error.value = "Enter a question.";
+    return;
+  }
+  if (questionKind.value === "open-ended") {
+    error.value = "";
+    socket?.startQuestion({ kind: "open-ended", text: questionText.value.trim() });
+    return;
+  }
   const options = questionOptions.value.map((option) => option.trim());
-  if (!questionText.value.trim() || options.length < 2 || options.length > 8 || options.some((option) => !option)) {
+  if (options.length < 2 || options.length > 8 || options.some((option) => !option)) {
     error.value = "Enter a question and between two and eight options.";
     return;
   }
   error.value = "";
-  socket?.startQuestion({ text: questionText.value, options });
+  socket?.startQuestion({ kind: "single-choice", text: questionText.value.trim(), options });
 }
 
 function addQuestionOption() {
@@ -123,7 +157,21 @@ function addQuestionOption() {
 }
 
 function answerQuestion(optionId: string) {
-  socket?.answerQuestion(optionId);
+  socket?.answerSingleChoiceQuestion(optionId);
+}
+
+function submitOpenEndedAnswer() {
+  const answer = openEndedAnswer.value.trim();
+  if (!answer) {
+    error.value = "Enter an answer.";
+    return;
+  }
+  error.value = "";
+  socket?.answerOpenEndedQuestion(answer);
+}
+
+function mergeOpenEndedResult(sourceText: string, targetText: string) {
+  socket?.mergeOpenEndedResult(sourceText, targetText);
 }
 
 function closeQuestion() {
@@ -191,6 +239,8 @@ function leaveLobby() {
   questionState.value = undefined;
   questionResult.value = undefined;
   selectedOptionId.value = "";
+  openEndedAnswer.value = "";
+  hasSubmittedOpenEndedAnswer.value = false;
   answerStatus.value = "";
   organizerToken.value = "";
   error.value = "";
@@ -337,17 +387,33 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
       </section>
       <section v-if="snapshot" class="question-authoring" aria-labelledby="question-title">
         <p class="eyebrow">First question</p>
-        <h2 id="question-title">Ask a single-choice question</h2>
+        <h2 id="question-title">Ask a question</h2>
+        <div class="segmented-control" role="group" aria-label="Question type">
+          <button
+            type="button"
+            :aria-pressed="questionKind === 'single-choice'"
+            :class="{ selected: questionKind === 'single-choice' }"
+            @click="questionKind = 'single-choice'"
+          >Single choice</button>
+          <button
+            type="button"
+            :aria-pressed="questionKind === 'open-ended'"
+            :class="{ selected: questionKind === 'open-ended' }"
+            @click="questionKind = 'open-ended'"
+          >Open-ended</button>
+        </div>
         <form class="question-form" @submit.prevent="startQuestion">
           <label for="question-text">Question</label>
           <input id="question-text" v-model="questionText" />
-          <label v-for="(_, index) in questionOptions" :key="index" :for="`question-option-${index}`">
-            Option {{ index + 1 }}
-            <input :id="`question-option-${index}`" v-model="questionOptions[index]" />
-          </label>
-          <button class="secondary-button" type="button" :disabled="questionOptions.length === 8" @click="addQuestionOption">
-            Add option
-          </button>
+          <template v-if="questionKind === 'single-choice'">
+            <label v-for="(_, index) in questionOptions" :key="index" :for="`question-option-${index}`">
+              Option {{ index + 1 }}
+              <input :id="`question-option-${index}`" v-model="questionOptions[index]" />
+            </label>
+            <button class="secondary-button" type="button" :disabled="questionOptions.length === 8" @click="addQuestionOption">
+              Add option
+            </button>
+          </template>
           <button class="primary-button ink-button" type="submit">Start question</button>
         </form>
       </section>
@@ -360,6 +426,28 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         <button v-else-if="questionState === 'closed'" class="primary-button ink-button" type="button" @click="revealQuestion">
           Reveal result
         </button>
+        <template v-if="questionState === 'closed' && activeQuestion.kind === 'open-ended' && openEndedResult">
+          <h3>Consolidate responses</h3>
+          <ul aria-label="Open-ended results to consolidate">
+            <li v-for="entry in openEndedResult.entries" :key="entry.text">
+              <span>{{ entry.text }}: {{ entry.responseCount }} {{ entry.responseCount === 1 ? "response" : "responses" }}</span>
+              <button
+                v-for="target in openEndedResult.entries.filter((candidate) => candidate.text !== entry.text)"
+                :key="target.text"
+                class="secondary-button"
+                type="button"
+                @click="mergeOpenEndedResult(entry.text, target.text)"
+              >Merge {{ entry.text }} into {{ target.text }}</button>
+            </li>
+          </ul>
+        </template>
+        <template v-else-if="questionState === 'revealed' && activeQuestion.kind === 'open-ended' && openEndedResult">
+          <ul aria-label="Open-ended result">
+            <li v-for="entry in openEndedResult.entries" :key="entry.text">
+              {{ entry.text }}: {{ entry.responseCount }} {{ entry.responseCount === 1 ? "response" : "responses" }}
+            </li>
+          </ul>
+        </template>
       </section>
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>
     </main>
@@ -370,23 +458,30 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         <p class="eyebrow">Session {{ sessionCode }}</p>
         <template v-if="activeQuestion && questionState === 'active'">
           <h1>{{ activeQuestion.text }}</h1>
-          <fieldset class="answer-options">
+          <fieldset v-if="activeQuestion.kind === 'single-choice'" class="answer-options">
             <legend>Choose one answer</legend>
             <label v-for="option in activeQuestion.options" :key="option.id">
               <input v-model="selectedOptionId" type="radio" name="answer" :value="option.id" @change="answerQuestion(option.id)" />
               {{ option.text }}
             </label>
           </fieldset>
+          <form v-else class="question-form" @submit.prevent="submitOpenEndedAnswer">
+            <label for="open-ended-answer">Your answer</label>
+            <input id="open-ended-answer" v-model="openEndedAnswer" maxlength="500" />
+            <button class="primary-button ink-button" type="submit">
+              {{ hasSubmittedOpenEndedAnswer ? "Update answer" : "Submit answer" }}
+            </button>
+          </form>
           <p v-if="answerStatus" role="status">{{ answerStatus }}</p>
         </template>
         <template v-else-if="activeQuestion && questionState === 'closed'">
           <h1>{{ activeQuestion.text }}</h1>
           <p>Responses are closed.</p>
         </template>
-        <template v-else-if="activeQuestion && questionState === 'revealed' && questionResult">
+        <template v-else-if="activeQuestion && activeQuestion.kind === 'single-choice' && questionState === 'revealed' && singleChoiceResult">
           <h1>{{ activeQuestion.text }}</h1>
           <div class="result-chart" aria-label="Single-choice result">
-            <div v-for="option in questionResult.options" :key="option.id" class="result-bar">
+            <div v-for="option in singleChoiceResult.options" :key="option.id" class="result-bar">
               <div class="result-bar-label">
                 <span>{{ option.text }}</span>
                 <span>{{ option.responseCount }} {{ option.responseCount === 1 ? "response" : "responses" }} ({{ option.percentage }}%)</span>
@@ -403,7 +498,16 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
               </div>
             </div>
           </div>
-          <p>{{ questionResult.totalResponseCount }} {{ questionResult.totalResponseCount === 1 ? "response" : "responses" }} total</p>
+          <p>{{ singleChoiceResult.totalResponseCount }} {{ singleChoiceResult.totalResponseCount === 1 ? "response" : "responses" }} total</p>
+        </template>
+        <template v-else-if="activeQuestion && activeQuestion.kind === 'open-ended' && questionState === 'revealed' && openEndedResult">
+          <h1>{{ activeQuestion.text }}</h1>
+          <ol aria-label="Open-ended result">
+            <li v-for="entry in openEndedResult.entries" :key="entry.text">
+              {{ entry.text }}: {{ entry.responseCount }} {{ entry.responseCount === 1 ? "response" : "responses" }}
+            </li>
+          </ol>
+          <p>{{ openEndedResult.totalResponseCount }} {{ openEndedResult.totalResponseCount === 1 ? "response" : "responses" }} total</p>
         </template>
         <h1 v-else-if="snapshot">You’re in.</h1>
         <h1 v-else>Joining...</h1>

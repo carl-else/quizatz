@@ -1,6 +1,7 @@
 import {
   isSessionCode,
   normalizeSessionCode,
+  type AnswerAcceptedMessage,
   type ApiError,
   type CreateSessionOptions,
   type LobbyMessage,
@@ -15,7 +16,9 @@ const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000];
 export interface LobbyConnection {
   close(code?: number, reason?: string): void;
   startQuestion(question: StartQuestionCommand["question"]): void;
-  answerQuestion(optionId: string): void;
+  answerSingleChoiceQuestion(optionId: string): void;
+  answerOpenEndedQuestion(text: string): void;
+  mergeOpenEndedResult(sourceText: string, targetText: string): void;
   closeQuestion(): void;
   revealQuestion(): void;
 }
@@ -82,7 +85,7 @@ export function connectToLobby(
   onFailure: (message: string) => void,
   onPasswordRequired: () => void,
   onNamedParticipationRequired: () => void,
-  onAnswerAccepted: (optionId: string) => void,
+  onAnswerAccepted: (answer: AnswerAcceptedMessage) => void,
 ): LobbyConnection {
   const code = normalizeSessionCode(rawCode);
   if (!isSessionCode(code)) throw new Error("Enter a six-character session code.");
@@ -116,7 +119,7 @@ export function connectToLobby(
         return;
       }
       if (message.type === "answer-accepted") {
-        onAnswerAccepted(message.optionId);
+        onAnswerAccepted(message);
         return;
       }
       receivedSnapshot = true;
@@ -158,8 +161,14 @@ export function connectToLobby(
     startQuestion(question) {
       socket?.send(JSON.stringify({ type: "start-question", question } satisfies StartQuestionCommand));
     },
-    answerQuestion(optionId) {
+    answerSingleChoiceQuestion(optionId) {
       socket?.send(JSON.stringify({ type: "answer-question", optionId }));
+    },
+    answerOpenEndedQuestion(text) {
+      socket?.send(JSON.stringify({ type: "answer-question", text }));
+    },
+    mergeOpenEndedResult(sourceText, targetText) {
+      socket?.send(JSON.stringify({ type: "merge-open-ended-result", sourceText, targetText }));
     },
     closeQuestion() {
       socket?.send(JSON.stringify({ type: "close-question" }));
