@@ -23,6 +23,14 @@ export interface OpenEndedQuestion {
 
 export type Question = SingleChoiceQuestion | OpenEndedQuestion;
 
+export type QuestionState = "upcoming" | "active" | "closed" | "revealed";
+
+export interface SessionQuestion {
+  question: Question;
+  state: QuestionState;
+  timerSeconds?: number;
+}
+
 export interface StartSingleChoiceQuestion {
   kind: "single-choice";
   text: string;
@@ -34,9 +42,26 @@ export interface StartOpenEndedQuestion {
   text: string;
 }
 
-export interface StartQuestionCommand {
-  type: "start-question";
-  question: StartSingleChoiceQuestion | StartOpenEndedQuestion;
+export type QuestionDefinition = StartSingleChoiceQuestion | StartOpenEndedQuestion;
+
+export interface AuthorQuestionCommand {
+  type: "author-question";
+  question: QuestionDefinition;
+  timerSeconds?: number;
+}
+
+export interface EditNextQuestionCommand {
+  type: "edit-next-question";
+  question: QuestionDefinition;
+  timerSeconds?: number;
+}
+
+export interface StartLiveSessionCommand {
+  type: "start-live-session";
+}
+
+export interface StartNextQuestionCommand {
+  type: "start-next-question";
 }
 
 export interface AnswerSingleChoiceQuestionCommand {
@@ -63,8 +88,6 @@ export interface RevealQuestionCommand {
   type: "reveal-question";
 }
 
-export type QuestionState = "upcoming" | "active" | "closed" | "revealed";
-
 export interface SingleChoiceResult {
   options: Array<SingleChoiceOption & { responseCount: number; percentage: number }>;
   totalResponseCount: number;
@@ -90,6 +113,13 @@ export interface LobbySnapshot {
 export interface ActiveQuestionSnapshot {
   type: "active-question";
   question: Question;
+  timerDeadline?: string;
+}
+
+export interface OrganizerQuestionQueueSnapshot {
+  type: "organizer-question-queue";
+  questions: SessionQuestion[];
+  activeQuestionIndex?: number;
 }
 
 export interface ClosedQuestionSnapshot {
@@ -126,6 +156,7 @@ export interface AnswerAcceptedMessage {
 export type LobbyMessage =
   | LobbySnapshot
   | ActiveQuestionSnapshot
+  | OrganizerQuestionQueueSnapshot
   | ClosedQuestionSnapshot
   | ClosedOpenEndedQuestionSnapshot
   | RevealedQuestionSnapshot

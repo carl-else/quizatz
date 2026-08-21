@@ -19,8 +19,10 @@ import {
   type Question,
   type QuestionState,
   type SessionAccessPolicy,
+  type SessionQuestion,
   type SingleChoiceResult,
   type SingleChoiceQuestion,
+  type QuestionDefinition,
 } from "./protocol";
 
 type View = "home" | "organizer" | "participant";
@@ -45,8 +47,12 @@ const password = ref("");
 const questionText = ref("");
 const questionKind = ref<"single-choice" | "open-ended">("single-choice");
 const questionOptions = ref(["", ""]);
+const timerSeconds = ref("");
+const authoredQuestions = ref<SessionQuestion[]>([]);
+const activeQuestionIndex = ref<number>();
 const homeUrl = import.meta.env.BASE_URL;
 let socket: LobbyConnection | undefined;
+let startAfterAuthoring = false;
 
 const participantCount = computed(() => snapshot.value?.participantCount ?? 0);
 const singleChoiceResult = computed(() => {
@@ -57,6 +63,9 @@ const openEndedResult = computed(() => {
   const result = questionResult.value;
   return result && "entries" in result ? result : undefined;
 });
+const nextQuestion = computed(() => activeQuestionIndex.value === undefined
+  ? undefined
+  : authoredQuestions.value[activeQuestionIndex.value + 1]);
 const shareUrl = computed(() => {
   if (!sessionCode.value) return "";
   const url = new URL(window.location.href);
@@ -76,7 +85,23 @@ function useSocket(accessToken?: string) {
     accessToken,
     password.value || undefined,
     (nextSnapshot) => {
-      if (nextSnapshot.type === "lobby") {
+      if (nextSnapshot.type === "organizer-question-queue") {
+        authoredQuestions.value = nextSnapshot.questions;
+        activeQuestionIndex.value = nextSnapshot.activeQuestionIndex;
+        if (startAfterAuthoring && nextSnapshot.activeQuestionIndex === undefined && nextSnapshot.questions.length) {
+          startAfterAuthoring = false;
+          socket?.startLiveSession();
+        }
+        const next = nextQuestion.value;
+        if (next) {
+          questionText.value = next.question.text;
+          questionKind.value = next.question.kind;
+          questionOptions.value = next.question.kind === "single-choice"
+            ? next.question.options.map((option) => option.text)
+            : ["", ""];
+          timerSeconds.value = next.timerSeconds ? String(next.timerSeconds) : "";
+        }
+      } else if (nextSnapshot.type === "lobby") {
         snapshot.value = nextSnapshot;
         activeQuestion.value = undefined;
         questionState.value = undefined;
@@ -133,23 +158,62 @@ function useSocket(accessToken?: string) {
   );
 }
 
-function startQuestion() {
+function questionInput(): { question: QuestionDefinition; timerSeconds?: number } | undefined {
   if (!questionText.value.trim()) {
     error.value = "Enter a question.";
-    return;
+    return undefined;
+  }
+  const timer = String(timerSeconds.value).trim();
+  const parsedTimer = timer ? Number(timer) : undefined;
+  if (parsedTimer !== undefined && (!Number.isInteger(parsedTimer) || parsedTimer < 1 || parsedTimer > 3_600)) {
+    error.value = "Use a shared timer between 1 and 3600 seconds.";
+    return undefined;
   }
   if (questionKind.value === "open-ended") {
     error.value = "";
-    socket?.startQuestion({ kind: "open-ended", text: questionText.value.trim() });
-    return;
+    return { question: { kind: "open-ended", text: questionText.value.trim() }, timerSeconds: parsedTimer };
   }
   const options = questionOptions.value.map((option) => option.trim());
   if (options.length < 2 || options.length > 8 || options.some((option) => !option)) {
     error.value = "Enter a question and between two and eight options.";
-    return;
+    return undefined;
   }
   error.value = "";
-  socket?.startQuestion({ kind: "single-choice", text: questionText.value.trim(), options });
+  return { question: { kind: "single-choice", text: questionText.value.trim(), options }, timerSeconds: parsedTimer };
+}
+
+function resetQuestionInput() {
+  questionText.value = "";
+  questionKind.value = "single-choice";
+  questionOptions.value = ["", ""];
+  timerSeconds.value = "";
+}
+
+function startQuestion() {
+  const input = questionInput();
+  if (!input) return;
+  startAfterAuthoring = true;
+  socket?.authorQuestion(input.question, input.timerSeconds);
+}
+
+function authorQuestion() {
+  const input = questionInput();
+  if (!input) return;
+  socket?.authorQuestion(input.question, input.timerSeconds);
+  resetQuestionInput();
+}
+
+function editNextQuestion() {
+  const input = questionInput();
+  if (input) socket?.editNextQuestion(input.question, input.timerSeconds);
+}
+
+function startLiveSession() {
+  socket?.startLiveSession();
+}
+
+function startNextQuestion() {
+  socket?.startNextQuestion();
 }
 
 function addQuestionOption() {
@@ -242,6 +306,10 @@ function leaveLobby() {
   openEndedAnswer.value = "";
   hasSubmittedOpenEndedAnswer.value = false;
   answerStatus.value = "";
+  resetQuestionInput();
+  authoredQuestions.value = [];
+  activeQuestionIndex.value = undefined;
+  startAfterAuthoring = false;
   organizerToken.value = "";
   error.value = "";
   view.value = "home";
@@ -386,8 +454,9 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         <span>{{ participantCount === 1 ? "participant" : "participants" }} in the lobby</span>
       </section>
       <section v-if="snapshot" class="question-authoring" aria-labelledby="question-title">
-        <p class="eyebrow">First question</p>
+        <p class="eyebrow">Question preparation</p>
         <h2 id="question-title">Ask a question</h2>
+        <p>{{ authoredQuestions.length }} of 50 questions prepared</p>
         <div class="segmented-control" role="group" aria-label="Question type">
           <button
             type="button"
@@ -404,17 +473,27 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         </div>
         <form class="question-form" @submit.prevent="startQuestion">
           <label for="question-text">Question</label>
-          <input id="question-text" v-model="questionText" />
+          <input id="question-text" v-model="questionText" maxlength="120" />
           <template v-if="questionKind === 'single-choice'">
             <label v-for="(_, index) in questionOptions" :key="index" :for="`question-option-${index}`">
               Option {{ index + 1 }}
-              <input :id="`question-option-${index}`" v-model="questionOptions[index]" />
+              <input :id="`question-option-${index}`" v-model="questionOptions[index]" maxlength="30" />
             </label>
             <button class="secondary-button" type="button" :disabled="questionOptions.length === 8" @click="addQuestionOption">
               Add option
             </button>
           </template>
-          <button class="primary-button ink-button" type="submit">Start question</button>
+          <label for="shared-timer-seconds">
+            Shared timer (seconds, optional)
+            <input id="shared-timer-seconds" v-model="timerSeconds" type="number" min="1" max="3600" />
+          </label>
+          <button class="secondary-button" type="button" :disabled="authoredQuestions.length === 50" @click="authorQuestion">
+            Add question
+          </button>
+          <button v-if="authoredQuestions.length" class="primary-button ink-button" type="button" @click="startLiveSession">
+            Start live session
+          </button>
+          <button v-else class="primary-button ink-button" type="submit">Start question</button>
         </form>
       </section>
       <section v-else-if="activeQuestion" class="active-question" aria-live="polite">
@@ -425,6 +504,9 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
         </button>
         <button v-else-if="questionState === 'closed'" class="primary-button ink-button" type="button" @click="revealQuestion">
           Reveal result
+        </button>
+        <button v-else-if="questionState === 'revealed' && nextQuestion" class="primary-button ink-button" type="button" @click="startNextQuestion">
+          Start next question
         </button>
         <template v-if="questionState === 'closed' && activeQuestion.kind === 'open-ended' && openEndedResult">
           <h3>Consolidate responses</h3>
@@ -448,6 +530,42 @@ onBeforeUnmount(() => socket?.close(1000, "Page closed"));
             </li>
           </ul>
         </template>
+      </section>
+      <section v-if="activeQuestion && nextQuestion" class="question-authoring" aria-labelledby="next-question-title">
+        <p class="eyebrow">Next question</p>
+        <h2 id="next-question-title">Edit the unpublished question</h2>
+        <div class="segmented-control" role="group" aria-label="Next question type">
+          <button
+            type="button"
+            :aria-pressed="questionKind === 'single-choice'"
+            :class="{ selected: questionKind === 'single-choice' }"
+            @click="questionKind = 'single-choice'"
+          >Single choice</button>
+          <button
+            type="button"
+            :aria-pressed="questionKind === 'open-ended'"
+            :class="{ selected: questionKind === 'open-ended' }"
+            @click="questionKind = 'open-ended'"
+          >Open-ended</button>
+        </div>
+        <form class="question-form" @submit.prevent="editNextQuestion">
+          <label for="question-text">Question</label>
+          <input id="question-text" v-model="questionText" maxlength="120" />
+          <template v-if="questionKind === 'single-choice'">
+            <label v-for="(_, index) in questionOptions" :key="index" :for="`question-option-${index}`">
+              Option {{ index + 1 }}
+              <input :id="`question-option-${index}`" v-model="questionOptions[index]" maxlength="30" />
+            </label>
+            <button class="secondary-button" type="button" :disabled="questionOptions.length === 8" @click="addQuestionOption">
+              Add option
+            </button>
+          </template>
+          <label for="shared-timer-seconds">
+            Shared timer (seconds, optional)
+            <input id="shared-timer-seconds" v-model="timerSeconds" type="number" min="1" max="3600" />
+          </label>
+          <button class="primary-button ink-button" type="submit">Save next question</button>
+        </form>
       </section>
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>
     </main>

@@ -182,6 +182,206 @@ test("an organizer starts a single-choice question for a participant", async ({ 
   await organizerContext.close();
 });
 
+test("an organizer authors questions before starting and progresses through them linearly", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("First question");
+  await organizer.getByLabel("Option 1").fill("First answer");
+  await organizer.getByLabel("Option 2").fill("Other answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Second question");
+  await organizer.getByLabel("Option 1").fill("Second answer");
+  await organizer.getByLabel("Option 2").fill("Another answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+
+  await expect(participant.getByRole("heading", { name: "First question" })).toBeVisible();
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await organizer.getByRole("button", { name: "Start next question" }).click();
+  await expect(participant.getByRole("heading", { name: "Second question" })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("an organizer edits the unpublished next question during a live session", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Published question");
+  await organizer.getByLabel("Option 1").fill("Published answer");
+  await organizer.getByLabel("Option 2").fill("Other answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Draft question");
+  await organizer.getByLabel("Option 1").fill("Draft answer");
+  await organizer.getByLabel("Option 2").fill("Another draft answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+
+  await expect(participant.getByRole("heading", { name: "Published question" })).toBeVisible();
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Edited next question");
+  await organizer.getByLabel("Option 1").fill("Edited answer");
+  await organizer.getByRole("button", { name: "Save next question" }).click();
+  await expect(participant.getByRole("heading", { name: "Published question" })).toBeVisible();
+
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await organizer.getByRole("button", { name: "Start next question" }).click();
+  await expect(participant.getByRole("heading", { name: "Edited next question" })).toBeVisible();
+  await expect(participant.getByRole("radio", { name: "Edited answer" })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("a shared timer closes the active question for every participant", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Timed question");
+  await organizer.getByLabel("Option 1").fill("First answer");
+  await organizer.getByLabel("Option 2").fill("Second answer");
+  await organizer.getByLabel("Shared timer (seconds, optional)").fill("1");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+
+  await expect(participant.getByRole("heading", { name: "Timed question" })).toBeVisible();
+  await expect(participant.getByText("Responses are closed.")).toBeVisible({ timeout: 5_000 });
+  await expect(organizer.getByRole("button", { name: "Reveal result" })).toBeVisible();
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("the single-question start action retains its shared timer", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Timed single question");
+  await organizer.getByLabel("Option 1").fill("First answer");
+  await organizer.getByLabel("Option 2").fill("Second answer");
+  await organizer.getByLabel("Shared timer (seconds, optional)").fill("1");
+  await organizer.getByRole("button", { name: "Start question" }).click();
+
+  await expect(participant.getByRole("heading", { name: "Timed single question" })).toBeVisible();
+  await expect(participant.getByText("Responses are closed.")).toBeVisible({ timeout: 5_000 });
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("a restored shared timer closes at its persisted deadline", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  const participantContext = await browser.newContext();
+  const participant = await participantContext.newPage();
+  await participant.goto(`/?session=${code}`);
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Restored timed question");
+  await organizer.getByLabel("Option 1").fill("First answer");
+  await organizer.getByLabel("Option 2").fill("Second answer");
+  await organizer.getByLabel("Shared timer (seconds, optional)").fill("3");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+  await expect(participant.getByRole("heading", { name: "Restored timed question" })).toBeVisible();
+
+  await participant.evaluate(async (sessionCode) => {
+    await fetch(`http://127.0.0.1:3000/api/e2e/reset-connections?session=${sessionCode}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer playwright-only" },
+    });
+  }, code);
+  await expect.poll(async () => participant.evaluate(async (sessionCode) => {
+    const response = await fetch(
+      `http://127.0.0.1:3000/api/e2e/connection-count?session=${sessionCode}`,
+      { headers: { Authorization: "Bearer playwright-only" } },
+    );
+    return ((await response.json()) as { connectionCount: number }).connectionCount;
+  }, code)).toBe(2);
+  await expect(participant.getByText("Responses are closed.")).toBeVisible({ timeout: 5_000 });
+
+  await participantContext.close();
+  await organizerContext.close();
+});
+
+test("a late participant joins only the active question", async ({ browser }) => {
+  const organizerContext = await browser.newContext();
+  await organizerContext.addInitScript(() => {
+    window.sessionStorage.setItem("quizatz:e2e-access-token", "playwright-only");
+  });
+  const organizer = await organizerContext.newPage();
+  await organizer.goto("/");
+  const code = await createSession(organizer, "anonymous");
+
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Closed question");
+  await organizer.getByLabel("Option 1").fill("Closed answer");
+  await organizer.getByLabel("Option 2").fill("Other closed answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("textbox", { name: "Question" }).fill("Active question");
+  await organizer.getByLabel("Option 1").fill("Active answer");
+  await organizer.getByLabel("Option 2").fill("Other active answer");
+  await organizer.getByRole("button", { name: "Add question" }).click();
+  await organizer.getByRole("button", { name: "Start live session" }).click();
+  await organizer.getByRole("button", { name: "Close question" }).click();
+  await organizer.getByRole("button", { name: "Reveal result" }).click();
+  await organizer.getByRole("button", { name: "Start next question" }).click();
+
+  const lateParticipantContext = await browser.newContext();
+  const lateParticipant = await lateParticipantContext.newPage();
+  await lateParticipant.goto(`/?session=${code}`);
+  await expect(lateParticipant.getByRole("heading", { name: "Active question" })).toBeVisible();
+  await expect(lateParticipant.getByRole("radio", { name: "Active answer", exact: true })).toBeVisible();
+  await expect(lateParticipant.getByText("Closed question")).toHaveCount(0);
+
+  await lateParticipantContext.close();
+  await organizerContext.close();
+});
+
 test("an organizer can start a single-choice question with eight options", async ({ browser }) => {
   const organizerContext = await browser.newContext();
   await organizerContext.addInitScript(() => {

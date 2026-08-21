@@ -4,10 +4,11 @@ import {
   type AnswerAcceptedMessage,
   type ApiError,
   type CreateSessionOptions,
+  type EditNextQuestionCommand,
   type LobbyMessage,
   type LobbySnapshot,
+  type QuestionDefinition,
   type SessionCreated,
-  type StartQuestionCommand,
 } from "./protocol";
 
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -15,7 +16,10 @@ const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000];
 
 export interface LobbyConnection {
   close(code?: number, reason?: string): void;
-  startQuestion(question: StartQuestionCommand["question"]): void;
+  authorQuestion(question: QuestionDefinition, timerSeconds?: number): void;
+  editNextQuestion(question: QuestionDefinition, timerSeconds?: number): void;
+  startLiveSession(): void;
+  startNextQuestion(): void;
   answerSingleChoiceQuestion(optionId: string): void;
   answerOpenEndedQuestion(text: string): void;
   mergeOpenEndedResult(sourceText: string, targetText: string): void;
@@ -158,8 +162,17 @@ export function connectToLobby(
 
   connect();
   return {
-    startQuestion(question) {
-      socket?.send(JSON.stringify({ type: "start-question", question } satisfies StartQuestionCommand));
+    authorQuestion(question, timerSeconds) {
+      socket?.send(JSON.stringify({ type: "author-question", question, timerSeconds }));
+    },
+    editNextQuestion(question, timerSeconds) {
+      socket?.send(JSON.stringify({ type: "edit-next-question", question, timerSeconds } satisfies EditNextQuestionCommand));
+    },
+    startLiveSession() {
+      socket?.send(JSON.stringify({ type: "start-live-session" }));
+    },
+    startNextQuestion() {
+      socket?.send(JSON.stringify({ type: "start-next-question" }));
     },
     answerSingleChoiceQuestion(optionId) {
       socket?.send(JSON.stringify({ type: "answer-question", optionId }));

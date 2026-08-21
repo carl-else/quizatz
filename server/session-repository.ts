@@ -1,6 +1,6 @@
 import { TableClient, type TableEntityResult } from "@azure/data-tables";
 import { DefaultAzureCredential } from "@azure/identity";
-import type { Question, QuestionState, SessionAccessPolicy, SingleChoiceQuestion } from "../src/protocol.js";
+import type { Question, QuestionState, SessionAccessPolicy, SessionQuestion, SingleChoiceQuestion } from "../src/protocol.js";
 
 const PARTITION_KEY = "live-session";
 const DEFAULT_TABLE_NAME = "LiveSessions";
@@ -18,6 +18,9 @@ export interface SessionRecord {
   passwordVerification?: string;
   activeQuestion?: Question;
   questionState?: QuestionState;
+  questions?: SessionQuestion[];
+  activeQuestionIndex?: number;
+  timerDeadline?: number;
   responses?: Record<string, string>;
   createdAt: number;
   expiresAt: number;
@@ -32,16 +35,67 @@ interface SessionEntity {
   passwordVerification?: string;
   activeQuestion?: string;
   questionState?: QuestionState;
+  questions?: string;
+  activeQuestionIndex?: number;
+  timerDeadline?: number;
   responses?: string;
   createdAt: number;
   expiresAt: number;
 }
 
-type StoredQuestion = Question | Omit<SingleChoiceQuestion, "kind">;
+interface StoredSingleChoiceQuestion {
+  kind?: "single-choice";
+  id?: string;
+  text: string;
+  options: Array<{ id?: string; text: string }>;
+}
+
+interface StoredOpenEndedQuestion {
+  kind: "open-ended";
+  id?: string;
+  text: string;
+}
+
+type StoredQuestion = StoredSingleChoiceQuestion | StoredOpenEndedQuestion;
 
 function parseQuestion(value: string): Question {
   const question = JSON.parse(value) as StoredQuestion;
-  return "kind" in question ? question : { ...question, kind: "single-choice" };
+  if (question.kind === "open-ended") {
+    return { kind: "open-ended", id: question.id ?? crypto.randomUUID(), text: question.text };
+  }
+  return {
+    kind: "single-choice",
+    id: question.id ?? crypto.randomUUID(),
+    text: question.text,
+    options: question.options.map((option) => ({ id: option.id ?? crypto.randomUUID(), text: option.text })),
+  };
+}
+
+function parseSessionQuestions(value: string): SessionQuestion[] {
+  const questions = JSON.parse(value) as Array<Omit<SessionQuestion, "question"> & { question: StoredQuestion }>;
+  return questions.map((sessionQuestion) => ({
+    ...sessionQuestion,
+    question: parseQuestion(JSON.stringify(sessionQuestion.question)),
+  }));
+}
+
+function compactQuestion(question: Question): StoredQuestion {
+  if (question.kind === "open-ended") return { kind: "open-ended", text: question.text };
+  return {
+    kind: "single-choice",
+    text: question.text,
+    options: question.options.map((option) => ({ text: option.text })),
+  };
+}
+
+function storedQuestions(session: SessionRecord): string | undefined {
+  if (!session.questions) return undefined;
+  return JSON.stringify(session.questions.map((sessionQuestion, index) => ({
+    ...sessionQuestion,
+    question: index === session.activeQuestionIndex
+      ? sessionQuestion.question
+      : compactQuestion(sessionQuestion.question),
+  })));
 }
 
 export interface SessionRepository {
@@ -63,6 +117,9 @@ function toRecord(entity: TableEntityResult<SessionEntity>, code: string): Sessi
     passwordVerification: entity.passwordVerification,
     activeQuestion: entity.activeQuestion ? parseQuestion(entity.activeQuestion) : undefined,
     questionState: entity.questionState,
+    questions: entity.questions ? parseSessionQuestions(entity.questions) : undefined,
+    activeQuestionIndex: entity.activeQuestionIndex,
+    timerDeadline: entity.timerDeadline,
     responses: entity.responses ? JSON.parse(entity.responses) as Record<string, string> : undefined,
     createdAt: entity.createdAt,
     expiresAt: entity.expiresAt,
@@ -119,6 +176,9 @@ export class TableSessionRepository implements SessionRepository {
         passwordVerification: session.passwordVerification,
         activeQuestion: session.activeQuestion ? JSON.stringify(session.activeQuestion) : undefined,
         questionState: session.questionState,
+        questions: storedQuestions(session),
+        activeQuestionIndex: session.activeQuestionIndex,
+        timerDeadline: session.timerDeadline,
         responses: session.responses ? JSON.stringify(session.responses) : undefined,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
@@ -151,6 +211,9 @@ export class TableSessionRepository implements SessionRepository {
         passwordVerification: session.passwordVerification,
         activeQuestion: session.activeQuestion ? JSON.stringify(session.activeQuestion) : undefined,
         questionState: session.questionState,
+        questions: storedQuestions(session),
+        activeQuestionIndex: session.activeQuestionIndex,
+        timerDeadline: session.timerDeadline,
         responses: session.responses ? JSON.stringify(session.responses) : undefined,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
