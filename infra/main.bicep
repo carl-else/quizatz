@@ -141,7 +141,7 @@ resource tableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
 resource costWarningBudget 'Microsoft.Consumption/budgets@2024-08-01' = {
   name: 'quizatz-monthly-cost-warning'
   properties: {
-    amount: 10
+    amount: 100
     category: 'Cost'
     timeGrain: 'Monthly'
     timePeriod: {
@@ -166,7 +166,7 @@ resource costWarningBudget 'Microsoft.Consumption/budgets@2024-08-01' = {
 resource costLimitBudget 'Microsoft.Consumption/budgets@2024-08-01' = {
   name: 'quizatz-monthly-cost-limit'
   properties: {
-    amount: 15
+    amount: 150
     category: 'Cost'
     timeGrain: 'Monthly'
     timePeriod: {
